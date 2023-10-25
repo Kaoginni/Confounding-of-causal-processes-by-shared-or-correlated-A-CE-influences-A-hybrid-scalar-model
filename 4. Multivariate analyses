@@ -1,0 +1,2747 @@
+# Script Name: Multivariate analyses with Sex differences incorporating Singetons by Olakunle Oginni (2023)
+# Based on script from Fruhling Rijsdijk
+# Description: This script tests for quantitative and qualitative sex differences as well as variance-inequality in variance components 
+# This is based on Neale et al., Multivariate genetic analysis of sex-lim and G x E interaction, Twin Research & Human Genetics, 2006
+# This script also compares the Cholesky decomposition, common factor independent pathway and biometric mediation models
+# This is done in a composite incorporating elements of all three models so that different mechanisms can be compared in the comparive groups
+# This composite also incorporates hybrid (i.e., scalar and quantitative) sex differences as indicated by the univariate sex differences
+# The models are specified to deal with the DZ opposite sex pairs 
+
+# Multivariate twin analysis models to estimate causes on (co)variation (ACE) with heterogeneity in ACE paths for males and females
+# Phenotypes:	SES, Financial strain, Highest level of education, Western Dietary pattern, Prudent dietary pattern, Depessive symptoms, Anxiety symptoms
+# Covariates regressed out: age, sex
+# Heterogeneity variable:	sex
+# Zygosity variable:		c1c2_sexzyg (1=MZM, 2=DZM, 3=MZF, 4=DZF, 5=DZOS, 6=Singletons, 7=Triplets)
+
+# MODELS:
+
+#-----------------------------------------------------------------------
+# Model I-1:
+# This is a constrained correlation model to get:
+# Equal Means & Variances across Twin Order & Zygosity group
+# But allowing sex differences in Means and Variances
+#-----------------------------------------------------------------------
+# Model II-1:
+# Quantitative sex differences for A, C, and E
+# In this model, there are male and female paths for mzm and dzm and mzf and dzf respectively
+# For dzos twins, male paths and female paths are combined in one model
+# In this model, rAmf and rCmf are constrained to 0.5 and 1 respectively
+#-------------------------------------------------------------------------------------------------------------------------------
+# Model II-2:
+# In this model, we call Model 1 but allow rCmf to be free. THIS IS THE Quantitative model + Qualitative SEX DIF FOR C MODEL
+#-------------------------------------------------------------------------------------------------------------------------------
+# Model II-3:
+# In this model, we call Model 1 but I allow rAmf to be free. THIS IS THE Quantitative model + Qualitative SEX DIF FOR A MODEL
+#--------------------------------------------------------------------------------------------------------------------------------
+# Model II-4: No qualitative or quantitative differences - Homogeneity CALLING MODEL 1
+# In this model, af, cf and ef are constrained to equal am, cm, and em respectively
+#----------------------------------------------------------------------------------------------------
+# Model II-5: Hybrid sex dif model - No sex differences for SES and Prudent dietary patterns, 
+# 	Scalar differences for Financial strain, Highest level of education, Western Dietary pattern and Depressive symptoms,
+#	And Quantitative sex differences for Anxiety symptoms
+#---------------------------------------------------------------------------------------------
+# Model II-6:  
+#---------------------------------------------------------------------------------------------
+
+
+#Clear workspace
+rm(list=ls())
+
+library(mvtnorm)
+library(psych)
+library(foreign)
+require(plyr)
+library(OpenMx) 
+require(Hmisc)	
+library(dplyr)
+
+mxOption(NULL, "Default optimizer", "CSOLNP") # SLSQP is a better optimizer for ordinal data
+
+# -------------------------------------------------------------------------------------------------------------
+# 1. Read data into R and prep
+# -------------------------------------------------------------------------------------------------------------
+
+ALLdata 	<- read.dta("3. USE - 2017.02.20_COTASS2_Q_and_Clinical_v11.dta")
+str(ALLdata)
+class(ALLdata) 		# to check that the data is loaded correctly, should return "data.frame"
+dim(ALLdata)      	# should be 3969 obs., 852 variables
+psych::describe(ALLdata)	# this will show you all the variables in Cotass-2
+
+ALLdata$sex	<-as.numeric(ALLdata$sex)
+ALLdata$zyg	<-as.numeric(ALLdata$zyg)
+ALLdata$old_zygosity	<-as.numeric(ALLdata$old_zygosity)
+ALLdata$sing_or_twin	<-as.numeric(ALLdata$sing_or_twin)
+ALLdata$c1c2_sexzyg	<-as.numeric(ALLdata$c1c2_sexzyg)
+ALLdata$sexzyg	<-as.numeric(ALLdata$sexzyg)
+ALLdata$finstrain	<-as.numeric(ALLdata$finstrain)
+
+psych::describe(ALLdata)	# this will show you all the variables in Cotass-2
+
+#Remove problem participants
+ALLdata 	<- ALLdata[ALLdata$res_code!='51941' & ALLdata$res_code!='51942',]  #gender info incorrect
+dim(ALLdata)      #should be 3967 obs.
+
+# Generate a new "numtw.noDZOS" (= twin in which males are always first in DZOS pairs, but also including the singletons:
+# I already did this in SPSS, but I coded singletons to 3 to include the third of the triplet trio
+
+#ALLdata$TwNo <- ALLdata$numtw_noDZOS; describe(ALLdata$TwNo); describe(ALLdata$numtw_noDZOS)
+#ALLdata$TwNo[ALLdata$sing_or_twin=="Singleton"]=1;  
+#table(ALLdata$numtw_noDZOS); table(ALLdata$TwNo)
+
+# Select only variables of interest and save them in a smaller file
+# In this example apart from all necessary variables we select Diastolic BP, Systolic BP and BMI (just as an example)
+
+subdata1 	<- ALLdata[,c("numclust","TwNo","zyg","sexzyg","age_reported","sex","Rec_Edu","Rec_el_count","Rec_el_tr_count",
+				"finstrain","Rec_Tot_Diet_dly","Rec_Unhealthy_Diet_dly","Rec_Healthy_Diet_dly","Dep","Anx")] 
+
+# Rename variables in subdata1 to make it easier. Note CMR stands for Cardio-Metabolic Risk & AM for Anthropometric (generic terms so that you don't 
+# need to change the rest of the script if you select different variables 
+
+names(subdata1) <- c("FamID","TwNo","zyg","sexzyg","age","sex","edu","elect","elect_trans",
+				"finstrain","totdiet","unhealthdiet","healthdiet","Dep","Anx")
+
+dim (subdata1)
+summary(subdata1)
+psych::describe(subdata1)
+
+# Because we don't want triplets, remove lines in which TwNo==3; this removes the 3rd sibling in each triplet group
+#subdata2 <- subdata1[subdata1$TwNo!=3,]
+#nrow(subdata1)
+#nrow(subdata2)
+
+
+# -------------------------------------------------------------------------------------------------------------------
+# 2. Regress out covariates, transform (if necessary) and Reshape the data to get pair-wise file for genetic analyses
+# -------------------------------------------------------------------------------------------------------------------
+# Regress out age, sex (This is standard procedure in twin modeling)
+## edu
+subdata1$edu_resid <- ((residuals(lm(subdata1$edu ~ subdata1$age + subdata1$sex, na.action="na.exclude")))*1.2)+4.6
+psych::describe(subdata1$edu)
+psych::describe(subdata1$edu_resid)
+
+# Check distributions
+hist(subdata1$edu)
+hist(subdata1$edu_resid)
+
+## elect
+subdata1$elect_resid <- ((residuals(lm(subdata1$elect ~ subdata1$age + subdata1$sex, na.action="na.exclude")))*1.4)+3.2
+psych::describe(subdata1$elect)
+psych::describe(subdata1$elect_resid)
+
+# Check distributions
+hist(subdata1$elect)
+hist(subdata1$elect_resid)
+
+## elect_trans
+subdata1$elect_trans_resid <- ((residuals(lm(subdata1$elect_trans ~ subdata1$age + subdata1$sex, na.action="na.exclude")))*0.6)+3.2
+psych::describe(subdata1$elect_trans)
+psych::describe(subdata1$elect_trans_resid)
+
+# Check distributions
+hist(subdata1$elect_trans)
+hist(subdata1$elect_trans_resid)
+
+## finstrain
+subdata1$finstrain_resid <- residuals(lm(subdata1$finstrain ~ subdata1$age + subdata1$sex, na.action="na.exclude"))
+psych::describe(subdata1$finstrain)
+psych::describe(subdata1$finstrain_resid)
+
+# Check distributions
+hist(subdata1$finstrain)
+hist(subdata1$finstrain_resid)
+
+subdata1$finstrain_tr <- ((subdata1$finstrain_resid+2)^(1/3))*5 #cuberoot transformation
+psych::describe(subdata1$finstrain_tr)
+hist(subdata1$finstrain_tr)
+
+## totdiet
+subdata1$totdiet_resid <- (residuals(lm(subdata1$totdiet ~ subdata1$age + subdata1$sex, na.action="na.exclude")))
+psych::describe(subdata1$totdiet)
+psych::describe(subdata1$totdiet_resid)
+
+# Check distributions
+hist(subdata1$totdiet)
+hist(subdata1$totdiet_resid)
+
+subdata1$totdiet_tr <- ((subdata1$totdiet_resid + 25)^(2))/200  #square transformation
+psych::describe(subdata1$totdiet_tr)
+hist(subdata1$totdiet_tr)
+
+## unhealthdiet
+subdata1$unhealthdiet_resid <- (residuals(lm(subdata1$unhealthdiet ~ subdata1$age + subdata1$sex, na.action="na.exclude")))
+psych::describe(subdata1$unhealthdiet)
+psych::describe(subdata1$unhealthdiet_resid)
+
+# Check distributions
+hist(subdata1$unhealthdiet)
+hist(subdata1$unhealthdiet_resid)
+
+subdata1$unhealthdiet_tr <- ((subdata1$unhealthdiet_resid + 17)^(3))/1500 #cube transformation
+psych::describe(subdata1$unhealthdiet_tr)
+hist(subdata1$unhealthdiet_tr)
+
+## healthdiet
+subdata1$healthdiet_resid <- (residuals(lm(subdata1$healthdiet ~ subdata1$age + subdata1$sex, na.action="na.exclude")))
+psych::describe(subdata1$healthdiet)
+psych::describe(subdata1$healthdiet_resid)
+
+# Check distributions
+hist(subdata1$healthdiet)
+hist(subdata1$healthdiet_resid)
+
+subdata1$healthdiet_tr <- (subdata1$healthdiet_resid + 19)/3 #transformation
+psych::describe(subdata1$healthdiet_tr)
+hist(subdata1$healthdiet_tr)
+
+## Dep
+subdata1$Dep_resid <- (residuals(lm(subdata1$Dep ~ subdata1$age + subdata1$sex, na.action="na.exclude")))
+psych::describe(subdata1$Dep)
+psych::describe(subdata1$Dep_resid)
+
+# Check distributions
+hist(subdata1$Dep)
+hist(subdata1$Dep_resid)
+
+subdata1$Dep_tr <- ((log(subdata1$Dep_resid + 8)/3)+.5)*5 #cube transformation
+psych::describe(subdata1$Dep_tr)
+hist(subdata1$Dep_tr)
+
+## Anx
+subdata1$Anx_resid <- (residuals(lm(subdata1$Anx ~ subdata1$age + subdata1$sex, na.action="na.exclude")))
+psych::describe(subdata1$Anx)
+psych::describe(subdata1$Anx_resid)
+
+# Check distributions
+hist(subdata1$Anx)
+hist(subdata1$Anx_resid)
+
+subdata1$Anx_tr <- log(subdata1$Anx_resid + 2.5)+2 #log transformation
+psych::describe(subdata1$Anx_tr)
+hist(subdata1$Anx_tr)
+
+summary(subdata1)
+psych::describe(subdata1)
+
+# Select only variables of interest and save them in a smaller file
+
+subdata2 	<- subdata1[,c("FamID","TwNo","zyg","sexzyg","age","sex","edu_resid","elect_resid","elect_trans_resid",
+				"finstrain_tr","totdiet_tr","unhealthdiet_tr","healthdiet_tr","Dep_tr","Anx_tr")] 
+
+# Rename variables in subdata1 to make it easier. Note CMR stands for Cardio-Metabolic Risk & AM for Anthropometric (generic terms so that you don't 
+# need to change the rest of the script if you select different variables 
+
+names(subdata2) <- c("FamID","TwNo","zyg","sexzyg","age","sex","edu","electct","electtranct",
+				"finstrain","totdiet","unhealthdiet","healthdiet","Dep","Anx")
+
+summary(subdata2)
+psych::describe(subdata2)
+
+# --------------------------------------------------------------------------------------------------------------------------
+
+# Reshape data from long format to wide format for twin analysis:
+subdata3 	<- reshape(subdata2, idvar = c("FamID","sexzyg"), timevar = "TwNo", direction = "wide")
+
+# Check data
+str(subdata3)
+summary(subdata3)
+psych::describe(subdata3)
+dim(subdata3)
+
+# Rename variables to get rid of the dot '.' in the names
+colnames(subdata3) <- c('FamID','sexzyg','zyg3','age3','sex3','edu3','electct3','electtranct3','finstrain3','totdiet3','unhealthdiet3','healthdiet3','Dep3','Anx3',
+						     'zyg1','age1','sex1','edu1','electct1','electtranct1','finstrain1','totdiet1','unhealthdiet1','healthdiet1','Dep1','Anx1', 
+						     'zyg2','age2','sex2','edu2','electct2','electtranct2','finstrain2','totdiet2','unhealthdiet2','healthdiet2','Dep2','Anx2') 
+
+psych::describe(subdata3)
+dim(subdata3)
+
+# -------------------------------------------------------------------------------------------------------------
+#Tabulating variable missingness
+# -------------------------------------------------------------------------------------------------------------
+
+##Dep
+selVars	<- c('Dep1', 'Dep2')
+(Depmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$Dep1) & is.na(subdata3$Dep2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$Dep2) & is.na(subdata3$Dep1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(Depmis))
+psych::describe(subdata3$Dep3)
+
+##Anx
+selVars	<- c('Anx1', 'Anx2')
+(Anxmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$Anx1) & is.na(subdata3$Anx2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$Anx2) & is.na(subdata3$Anx1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(Anxmis))
+psych::describe(subdata3$Anx3)
+
+##healthdiet
+selVars	<- c('healthdiet1', 'healthdiet2')
+(healthdietmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$healthdiet1) & is.na(subdata3$healthdiet2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$healthdiet2) & is.na(subdata3$healthdiet1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(healthdietmis))
+psych::describe(subdata3$healthdiet3)
+
+##unhealthdiet
+selVars	<- c('unhealthdiet1', 'unhealthdiet2')
+(unhealthdietmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$unhealthdiet1) & is.na(subdata3$unhealthdiet2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$unhealthdiet2) & is.na(subdata3$unhealthdiet1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(unhealthdietmis))
+psych::describe(subdata3$unhealthdiet3)
+
+##totdiet
+selVars	<- c('totdiet1', 'totdiet2')
+(totdietmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$totdiet1) & is.na(subdata3$totdiet2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$totdiet2) & is.na(subdata3$totdiet1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(totdietmis))
+psych::describe(subdata3$totdiet3)
+
+##finstrain
+selVars	<- c('finstrain1', 'finstrain2')
+(finstrainmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$finstrain1) & is.na(subdata3$finstrain2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$finstrain2) & is.na(subdata3$finstrain1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(finstrainmis))
+psych::describe(subdata3$finstrain3)
+
+##electtranct
+selVars	<- c('electtranct1', 'electtranct2')
+(electtranctmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$electtranct1) & is.na(subdata3$electtranct2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$electtranct2) & is.na(subdata3$electtranct1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(electtranctmis))
+psych::describe(subdata3$electtranct3)
+
+##electct
+selVars	<- c('electct1', 'electct2')
+(electctmis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$electct1) & is.na(subdata3$electct2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$electct2) & is.na(subdata3$electct1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(electctmis))
+psych::describe(subdata3$electct3)
+
+##edu
+selVars	<- c('edu1', 'edu2')
+(edumis	<-matrix(
+	c(
+	(totalpairs		<-table(subdata3$zyg1)),
+	(complete_pairs	<-table(subdata3$zyg1[complete.cases(subdata3[,selVars])])),
+	(incomplete1	<-table(subdata3$zyg1[!is.na(subdata3$edu1) & is.na(subdata3$edu2)])),
+	(incomplete2	<-table(subdata3$zyg2[!is.na(subdata3$edu2) & is.na(subdata3$edu1)])),
+	(incomplete		<-incomplete1 + incomplete2),
+	(totalsample	<-(2*complete_pairs) + incomplete)
+	),
+	ncol=2,
+	byrow=TRUE,
+	dimnames=list(c("total pairs", "comp pairs","incomp pairs1","incomp pairs2","incomp sing","n (total)"), c("mz","dz"))
+	))
+(rowtotal		<-rowSums(edumis))
+psych::describe(subdata3$edu3)
+
+#-----------------------------------------------------------------------
+# Model I-1:
+# This is a constrained correlation model to get:
+# Equal Means & Variances across Twin Order & Zygosity group
+# But allowing sex differences in Means and Variances
+#------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------------------------------------------
+# 3. Prep Data files for twin analyses
+# -------------------------------------------------------------------------------------------------------------
+
+#selVars	<- c('edu1','electct1','electtranct1','finstrain1','totdiet1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+#			'edu2','electct2','electtranct2','finstrain2','totdiet2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+#selVarsS 	<- c('edu3','electct3','electtranct3','finstrain3','totdiet3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+selVars	<- c('edu1','electtranct1','finstrain1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+			'edu2','electtranct2','finstrain2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+selVarsS 	<- c('edu3','electtranct3','finstrain3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+# Subset data
+# This will generate 5 sub data files for the 5 sex-by-zygosity groups
+mzmData 	<- subdata3[subdata3$sexzyg == 1, selVars]
+dzmData 	<- subdata3[subdata3$sexzyg == 2, selVars]
+mzfData 	<- subdata3[subdata3$sexzyg == 3, selVars]
+dzfData 	<- subdata3[subdata3$sexzyg == 4, selVars]
+dzoData 	<- subdata3[subdata3$sexzyg == 5, selVars]
+
+# Subset singletons
+# This will generate 2 sub data files for the male adn female singelton groups
+smData		<- subset(subdata3, sexzyg == 6, selVarsS)
+sfData		<- subset(subdata3, sexzyg == 7, selVarsS)
+
+# Check sub-data files
+psych::describe(mzmData)
+psych::describe(dzmData)
+psych::describe(mzfData)
+psych::describe(dzfData)
+psych::describe(dzoData)
+psych::describe(smData)
+psych::describe(sfData)
+
+
+#**************************************************************************************************************
+# (5) Check means and correlations and covariances of the data files
+# These will not be used, they are just meant to get a feel for the data and to help decide on starting values
+#************************************************************************************************************
+#*******************************************************************
+#  Twin Means, Covariances & Correlations
+#-------------------------------------------------------------------
+# Means
+(colMeans(mzmData, na.rm=T))
+(colMeans(dzmData, na.rm=T))
+(colMeans(mzfData, na.rm=T))
+(colMeans(dzfData, na.rm=T))
+(colMeans(dzoData, na.rm=T))
+
+# Variance-Covariance Matrices
+(cov(mzmData, use="complete"))
+(cov(dzmData, use="complete"))
+(cov(mzfData, use="complete"))
+(cov(dzfData, use="complete"))
+(cov(dzoData, use="complete"))
+
+# Correlations
+(cor(mzmData, use="complete"))
+(cor(dzmData, use="complete"))
+(cor(mzfData, use="complete"))
+(cor(dzfData, use="complete"))
+(cor(dzoData, use="complete"))
+
+# --------------------------------------------------------------------------------------------------------
+# 6	Here the actual Model-Fitting Analysis starts	
+# --------------------------------------------------------------------------------------------------------
+nv			<- 7				# number of variables for a twin = 1 in Univariate
+ntv			<- 2*nv			# number of variables for a pair = 2* 1 for Univariate
+nlower		<- ntv*(ntv+1)/2 		# number of free elements in a lower matrix ntv*ntv
+ncor			<-(nv*(nv+1)/2)-nv	# number of free elements in a correlation matrix nv*nv
+
+# FIRST, CREATE OBJECTS WITH Labels for the Means, SD, and correlation to ease specification in the body of the model
+
+# Create Labels for the Means Matrices
+(LabMM	<- paste("mm",1:nv,sep=""))		# Male singleton
+(LabMF	<- paste("mf",1:nv,sep=""))		# Female singleton
+(LabMMM	<- c(LabMM,LabMM))			# male-male pairs
+(LabMFF	<- c(LabMF,LabMF))			# female-female pairs
+(LabMMF	<- c(LabMM,LabMF))			# male-female pairs
+
+# Create Labels for the phenotypic Correlation Matrices
+(LabsRphM		<- paste("rm",1:ncor,sep=""))		# Males (Twins & singletons)
+(LabsRphF		<- paste("rf",1:ncor,sep=""))		# Females (Twins & singletons)
+
+# Create Labels for Lower Triangular Matrices for twin correlations
+(LabCorMZM <- paste("mzm", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep="") )
+(LabCorDZM <- paste("dzm", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep="") )
+(LabCorMZF <- paste("mzf", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep="") )
+(LabCorDZF <- paste("dzf", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep="") )
+(LabCorDZO <- paste("dzo", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep="") )
+
+# Create Labels for the Standard Deviation Matrices
+(LabSDM	<- paste("Sdm",1:nv,sep=""))		# Male singleton
+(LabSDF	<- paste("Sdf",1:nv,sep=""))		# Female singleton
+(LabSDMM	<- c(LabSDM,LabSDM))			# male-male pairs
+(LabSDFF	<- c(LabSDF,LabSDF))			# female-female pairs
+(LabSDMF	<- c(LabSDM,LabSDF))			# male-female pairs
+
+
+# SECOND, CREATE OBJECTS WITH Starting Values for the matrices above
+
+# Starting values for Means and SD (equal for all groups, does not have to be too specific)
+
+(Stmean			<-colMeans(mzmData[,1:nv],na.rm=TRUE))
+(Stsd 			<-sapply(mzmData[,1:nv],sd, na.rm=TRUE))
+
+StWithinperson		<-c(.4)
+StBetweenMZ 		<-c(.4)
+StBetweenDZ 		<-c(.4)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 	
+# I-1	Specify the Constrained Correlation Model 
+#	Note: This output is used in your reports
+# --------------------------------------------------------------------------------------------------------------
+
+# Matrices to estimate parameters (Means, SDs, and Cor) in Male pairs and singletons
+MeanMM	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMM, 	name="expMeanMM" )
+SDMM		<-mxMatrix( "Diag", ntv, ntv, free=T, 	values=c(Stsd,Stsd),		labels=LabSDMM, 	name="sdMM" )
+MeanM		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMM, 	name="expMeanM" )
+SDM		<-mxMatrix( "Diag", nv, nv, free=T, 	values=c(Stsd),			labels=LabSDM, 	name="sdM" )
+RphM		<-mxMatrix( "Stand", nv, nv, free=T, 	values=StWithinperson, 		labels=LabsRphM, 	name="withinM") 
+
+# Matrices to estimate parameters (Means, SDs, and Cor) in Female pairs and singletons
+MeanFF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMFF, 	name="expMeanFF" )
+SDFF		<-mxMatrix( "Diag", ntv, ntv, free=T, 	values=c(Stsd,Stsd),		labels=LabSDFF, 	name="sdFF" )
+MeanF		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMF, 	name="expMeanF" )
+SDF		<-mxMatrix( "Diag", nv, nv, free=T, 	values=c(Stsd),			labels=LabSDF, 	name="sdF" )
+RphF		<-mxMatrix( "Stand", nv, nv, free=T, 	values=StWithinperson, 		labels=LabsRphF, 	name="withinF") 
+
+# Matrices to estimate parameters (Means, SDs) in DZO pairs 
+MeanMF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMF, 	name="expMeanMF" )
+SDMF		<-mxMatrix( "Diag", ntv, ntv, free=T, 	values=c(Stsd,Stsd),		labels=LabSDMF, 	name="sdMF" )
+
+# Matrices to estimate Twin Correlation in MZM 
+MZMb		<-mxMatrix("Symm", nv, nv, free=T, values = StBetweenMZ, labels=LabCorMZM , name="BetweenMZM") 
+corMZM	<-mxAlgebra(rbind(cbind(withinM,BetweenMZM), cbind(BetweenMZM, withinM)), name="RMZM")
+
+# Matrices to estimate Twin Correlation in DZM 
+DZMb		<-mxMatrix("Symm", nv, nv, free=T, values = StBetweenDZ, labels=LabCorDZM , name="BetweenDZM") 
+corDZM	<-mxAlgebra(rbind(cbind(withinM,BetweenDZM), cbind(BetweenDZM, withinM)), name="RDZM")
+
+# Matrices to estimate Twin Correlation in MZF 
+MZFb		<-mxMatrix("Symm", nv, nv, free=T, values = StBetweenMZ, labels=LabCorMZF , name="BetweenMZF") 
+corMZF	<-mxAlgebra(rbind(cbind(withinF,BetweenMZF), cbind(BetweenMZF, withinF)), name="RMZF")
+
+# Matrices to estimate Twin Correlation in DZF 
+DZFb		<-mxMatrix("Symm", nv, nv, free=T, values = StBetweenDZ, labels=LabCorDZF , name="BetweenDZF") 
+corDZF	<-mxAlgebra(rbind(cbind(withinF,BetweenDZF), cbind(BetweenDZF, withinF)), name="RDZF")
+
+# Matrices to estimate Twin Correlation in DZO 
+DZOb		<-mxMatrix("Symm", nv, nv, free=T, values = StBetweenDZ, labels=LabCorDZO , name="BetweenDZO") 
+corDZO	<-mxAlgebra(rbind(cbind(withinM,BetweenDZO), cbind(BetweenDZO, withinF)), name="RDZO")
+
+# Algebra to generate Expected Variance/Covariance Matrices
+CovMZM	<-mxAlgebra( expression=sdMM %*% RMZM %*% t(sdMM), name="expCovMZM" )
+CovDZM	<-mxAlgebra( expression=sdMM %*% RDZM %*% t(sdMM), name="expCovDZM" )
+CovMZF	<-mxAlgebra( expression=sdFF %*% RMZF %*% t(sdFF), name="expCovMZF" )
+CovDZF	<-mxAlgebra( expression=sdFF %*% RDZF %*% t(sdFF), name="expCovDZF" )
+CovDZO	<-mxAlgebra( expression=sdMF %*% RDZO %*% t(sdMF), name="expCovDZO" )
+CovSM		<-mxAlgebra( expression=sdM %*% withinM %*% t(sdM), name="expCovSM" )
+CovSF		<-mxAlgebra( expression=sdF %*% withinF %*% t(sdF), name="expCovSF" )
+
+# Data objects for Multiple Groups
+dataMZM	<-mxData(mzmData, type="raw")
+dataMZF	<-mxData(mzfData, type="raw")
+dataDZM	<-mxData(dzmData, type="raw")
+dataDZF	<-mxData(dzfData, type="raw")
+dataDZO	<-mxData(dzoData, type="raw")
+dataSM	<-mxData(smData, type="raw")
+dataSF	<-mxData(sfData, type="raw")
+
+# Objective objects for Multiple Groups
+objMZM	<-mxExpectationNormal( covariance="expCovMZM", means="expMeanMM", dimnames=selVars )
+objMZF	<-mxExpectationNormal( covariance="expCovMZF", means="expMeanFF", dimnames=selVars )
+objDZM	<-mxExpectationNormal( covariance="expCovDZM", means="expMeanMM", dimnames=selVars )
+objDZF	<-mxExpectationNormal( covariance="expCovDZF", means="expMeanFF", dimnames=selVars )
+objDZO	<-mxExpectationNormal( covariance="expCovDZO", means="expMeanMF", dimnames=selVars )
+objSM		<-mxExpectationNormal( covariance="expCovSM", means="expMeanM", dimnames=selVarsS )
+objSF		<-mxExpectationNormal( covariance="expCovSF", means="expMeanF", dimnames=selVarsS )
+
+fitFunction <- mxFitFunctionML()
+
+# Combine Groups	
+modelMZM	<- mxModel( MeanMM, SDMM, RphM, MZMb, corMZM, CovMZM, dataMZM, objMZM, fitFunction, name="MZM")
+modelMZF	<- mxModel( MeanFF, SDFF, RphF, MZFb, corMZF, CovMZF, dataMZF, objMZF, fitFunction, name="MZF")
+modelDZM	<- mxModel( MeanMM, SDMM, RphM, DZMb, corDZM, CovDZM, dataDZM, objDZM, fitFunction, name="DZM")
+modelDZF	<- mxModel( MeanFF, SDFF, RphF, DZFb, corDZF, CovDZF, dataDZF, objDZF, fitFunction, name="DZF")
+modelDZO	<- mxModel( MeanMF, SDMF, RphM, RphF, DZOb, corDZO, CovDZO, dataDZO, objDZO, fitFunction, name="DZO")
+modelSM	<- mxModel( MeanM,  SDM,  RphM, CovSM, dataSM, objSM, fitFunction, name="SingM")
+modelSF	<- mxModel( MeanF,  SDF,  RphF, CovSF, dataSF, objSF, fitFunction, name="SingF")
+
+minus2ll	<- mxAlgebra( expression=MZM.objective + MZF.objective + DZM.objective + DZF.objective + DZO.objective 
+						+ SingM.objective + SingF.objective, name="m2LL" )
+obj		<- mxFitFunctionAlgebra( "m2LL" )
+
+Conf1		<- mxCI (c ('MZM.withinM[2,1]','MZM.withinM[3,1]','MZM.withinM[4,1]','MZM.withinM[5,1]','MZM.withinM[6,1]','MZM.withinM[7,1]','MZM.withinM[3,2]',
+				'MZM.withinM[4,2]','MZM.withinM[5,2]','MZM.withinM[6,2]','MZM.withinM[7,2]','MZM.withinM[4,3]','MZM.withinM[5,3]','MZM.withinM[6,3]',
+				'MZM.withinM[7,3]','MZM.withinM[5,4]','MZM.withinM[6,4]','MZM.withinM[7,4]','MZM.withinM[6,5]','MZM.withinM[7,5]','MZM.withinM[7,6]') ) # Rph males 
+Conf2		<- mxCI (c ('MZF.withinF[2,1]','MZF.withinF[3,1]','MZF.withinF[4,1]','MZF.withinF[5,1]','MZF.withinF[6,1]','MZF.withinF[7,1]','MZF.withinF[3,2]',
+				'MZF.withinF[4,2]','MZF.withinF[5,2]','MZF.withinF[6,2]','MZF.withinF[7,2]','MZF.withinF[4,3]','MZF.withinF[5,3]','MZF.withinF[6,3]',
+				'MZF.withinF[7,3]','MZF.withinF[5,4]','MZF.withinF[6,4]','MZF.withinF[7,4]','MZF.withinF[6,5]','MZF.withinF[7,5]','MZF.withinF[7,6]') ) # Rph females
+Conf3		<- mxCI (c ('MZM.BetweenMZM[1,1]','MZM.BetweenMZM[2,1]','MZM.BetweenMZM[3,1]','MZM.BetweenMZM[4,1]','MZM.BetweenMZM[5,1]','MZM.BetweenMZM[6,1]','MZM.BetweenMZM[7,1]','MZM.BetweenMZM[2,2]','MZM.BetweenMZM[3,2]','MZM.BetweenMZM[4,2]',
+				'MZM.BetweenMZM[5,2]','MZM.BetweenMZM[6,2]','MZM.BetweenMZM[7,2]','MZM.BetweenMZM[3,3]','MZM.BetweenMZM[4,3]','MZM.BetweenMZM[5,3]','MZM.BetweenMZM[6,3]','MZM.BetweenMZM[7,3]','MZM.BetweenMZM[4,4]',
+				'MZM.BetweenMZM[5,4]','MZM.BetweenMZM[6,4]','MZM.BetweenMZM[7,4]','MZM.BetweenMZM[5,5]','MZM.BetweenMZM[6,5]','MZM.BetweenMZM[7,5]','MZM.BetweenMZM[6,6]','MZM.BetweenMZM[7,6]','MZM.BetweenMZM[7,7]') ) # Rph males 
+Conf4		<- mxCI (c ('MZF.BetweenMZF[1,1]','MZF.BetweenMZF[2,1]','MZF.BetweenMZF[3,1]','MZF.BetweenMZF[4,1]','MZF.BetweenMZF[5,1]','MZF.BetweenMZF[6,1]','MZF.BetweenMZF[7,1]','MZF.BetweenMZF[2,2]','MZF.BetweenMZF[3,2]','MZF.BetweenMZF[4,2]',
+				'MZF.BetweenMZF[5,2]','MZF.BetweenMZF[6,2]','MZF.BetweenMZF[7,2]','MZF.BetweenMZF[3,3]','MZF.BetweenMZF[4,3]','MZF.BetweenMZF[5,3]','MZF.BetweenMZF[6,3]','MZF.BetweenMZF[7,3]','MZF.BetweenMZF[4,4]',
+				'MZF.BetweenMZF[5,4]','MZF.BetweenMZF[6,4]','MZF.BetweenMZF[7,4]','MZF.BetweenMZF[5,5]','MZF.BetweenMZF[6,5]','MZF.BetweenMZF[7,5]','MZF.BetweenMZF[6,6]','MZF.BetweenMZF[7,6]','MZF.BetweenMZF[7,7]') ) # Rph females
+Conf5		<- mxCI (c ('DZM.BetweenDZM[1,1]','DZM.BetweenDZM[2,1]','DZM.BetweenDZM[3,1]','DZM.BetweenDZM[4,1]','DZM.BetweenDZM[5,1]','DZM.BetweenDZM[6,1]','DZM.BetweenDZM[7,1]','DZM.BetweenDZM[2,2]','DZM.BetweenDZM[3,2]','DZM.BetweenDZM[4,2]',
+				'DZM.BetweenDZM[5,2]','DZM.BetweenDZM[6,2]','DZM.BetweenDZM[7,2]','DZM.BetweenDZM[3,3]','DZM.BetweenDZM[4,3]','DZM.BetweenDZM[5,3]','DZM.BetweenDZM[6,3]','DZM.BetweenDZM[7,3]','DZM.BetweenDZM[4,4]',
+				'DZM.BetweenDZM[5,4]','DZM.BetweenDZM[6,4]','DZM.BetweenDZM[7,4]','DZM.BetweenDZM[5,5]','DZM.BetweenDZM[6,5]','DZM.BetweenDZM[7,5]','DZM.BetweenDZM[6,6]','DZM.BetweenDZM[7,6]','DZM.BetweenDZM[7,7]') ) # Rph males 
+Conf6		<- mxCI (c ('DZF.BetweenDZF[1,1]','DZF.BetweenDZF[2,1]','DZF.BetweenDZF[3,1]','DZF.BetweenDZF[4,1]','DZF.BetweenDZF[5,1]','DZF.BetweenDZF[6,1]','DZF.BetweenDZF[7,1]','DZF.BetweenDZF[2,2]','DZF.BetweenDZF[3,2]','DZF.BetweenDZF[4,2]',
+				'DZF.BetweenDZF[5,2]','DZF.BetweenDZF[6,2]','DZF.BetweenDZF[7,2]','DZF.BetweenDZF[3,3]','DZF.BetweenDZF[4,3]','DZF.BetweenDZF[5,3]','DZF.BetweenDZF[6,3]','DZF.BetweenDZF[7,3]','DZF.BetweenDZF[4,4]',
+				'DZF.BetweenDZF[5,4]','DZF.BetweenDZF[6,4]','DZF.BetweenDZF[7,4]','DZF.BetweenDZF[5,5]','DZF.BetweenDZF[6,5]','DZF.BetweenDZF[7,5]','DZF.BetweenDZF[6,6]','DZF.BetweenDZF[7,6]','DZF.BetweenDZF[7,7]') ) # Rph females
+Conf7		<- mxCI (c ('DZO.BetweenDZO[1,1]','DZO.BetweenDZO[2,1]','DZO.BetweenDZO[3,1]','DZO.BetweenDZO[4,1]','DZO.BetweenDZO[5,1]','DZO.BetweenDZO[6,1]','DZO.BetweenDZO[7,1]','DZO.BetweenDZO[2,2]','DZO.BetweenDZO[3,2]','DZO.BetweenDZO[4,2]',
+				'DZO.BetweenDZO[5,2]','DZO.BetweenDZO[6,2]','DZO.BetweenDZO[7,2]','DZO.BetweenDZO[3,3]','DZO.BetweenDZO[4,3]','DZO.BetweenDZO[5,3]','DZO.BetweenDZO[6,3]','DZO.BetweenDZO[7,3]','DZO.BetweenDZO[4,4]',
+				'DZO.BetweenDZO[5,4]','DZO.BetweenDZO[6,4]','DZO.BetweenDZO[7,4]','DZO.BetweenDZO[5,5]','DZO.BetweenDZO[6,5]','DZO.BetweenDZO[7,5]','DZO.BetweenDZO[6,6]','DZO.BetweenDZO[7,6]','DZO.BetweenDZO[7,7]') ) # Rph males 
+
+Conf1		<- mxCI (c ('DZO.BetweenDZO[5,1]') ) #
+SatModel 	<- mxModel( "Sat", modelMZM,  modelMZF, modelDZM, modelDZF, modelDZO, modelSM, modelSF, minus2ll, obj, Conf1, Conf2, Conf3, Conf4, Conf5, Conf6, Conf7)
+
+# -----------------------------------------------------------------------------------------
+
+# (1) Run Constrained Cor Model 
+SatFit		<- mxRun(SatModel, intervals=F)
+(SatSumm 		<- summary(SatFit, verbose = F)) # to get the problematic confidence intervals: verbose = F
+
+# A more convenient way to get the output
+mxEval (MZM.RMZM, SatFit)
+mxEval (DZM.RDZM, SatFit)
+mxEval (MZF.RMZF, SatFit)
+mxEval (DZF.RDZF, SatFit)
+mxEval (DZO.RDZO, SatFit)
+
+
+#------------------------------------------------------------------------------------------
+# (II-1) Specify the Quantitative Heterogeneity ACE Model, modelling a set of ACE parameters 
+#	 for males and females separately using same-sex twin pair & DZ-OS PAIRS
+#------------------------------------------------------------------------------------------
+nv			<- 7				# number of variables for a twin = 1 in Univariate
+ntv			<- 2*nv			# number of variables for a pair = 2* 1 for Univariate
+nlower		<- ntv*(ntv+1)/2 		# number of free elements in a lower matrix ntv*ntv
+ncor			<-(nv*(nv+1)/2)-nv	# number of free elements in a correlation matrix nv*nv
+
+selVars	<- c('edu1','electtranct1','finstrain1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+			'edu2','electtranct2','finstrain2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+selVarsS 	<- c('edu3','electtranct3','finstrain3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+
+# Subset data
+# This will generate 5 sub data files for the 5 sex-by-zygosity groups
+mzmData 	<- subdata3[subdata3$sexzyg == 1, selVars]
+dzmData 	<- subdata3[subdata3$sexzyg == 2, selVars]
+mzfData 	<- subdata3[subdata3$sexzyg == 3, selVars]
+dzfData 	<- subdata3[subdata3$sexzyg == 4, selVars]
+dzoData 	<- subdata3[subdata3$sexzyg == 5, selVars]
+
+# Subset singletons
+# This will generate 2 sub data files for the male adn female singelton groups
+smData		<- subset(subdata3, sexzyg == 6, selVarsS)
+sfData		<- subset(subdata3, sexzyg == 7, selVarsS)
+
+# Check sub-data files
+psych::describe(mzmData)
+psych::describe(dzmData)
+psych::describe(mzfData)
+psych::describe(dzfData)
+psych::describe(dzoData)
+psych::describe(smData)
+psych::describe(sfData)
+
+# FIRST, CREATE OBJECTS WITH Labels for the Means, SD, and correlation to ease specification in the body of the model
+
+# Create Labels for the Means Matrices
+(LabMM	<- paste("mm",1:nv,sep=""))		# Male singleton
+(LabMF	<- paste("mf",1:nv,sep=""))		# Female singleton
+(LabMMM	<- c(LabMM,LabMM))				# male-male pairs
+(LabMFF	<- c(LabMF,LabMF))				# female-female pairs
+(LabMMF	<- c(LabMM,LabMF))				# male-female pairs
+
+# Create Labels for the A, C and E latent Factor Correlation Matrices (for the correlation between variables)
+(LabsRAM		<- paste("Ram",1:ncor,sep=""))		# Males (Twins & singletons)
+(LabsRCM		<- paste("Rcm",1:ncor,sep=""))		# Males (Twins & singletons)
+(LabsREM		<- paste("Rem",1:ncor,sep=""))		# Males (Twins & singletons)
+(LabsRAF		<- paste("Raf",1:ncor,sep=""))	# Females (Twins & singletons)
+(LabsRCF		<- paste("Rcf",1:ncor,sep=""))		# Females (Twins & singletons)
+(LabsREF		<- paste("Ref",1:ncor,sep=""))		# Females (Twins & singletons)
+
+# Create Labels for the A, C and E Standard Deviation Matrices (paths from Latent Factors to variables)
+(LabAm	<- paste("amp",1:nv,sep=""))		# Males
+(LabCm	<- paste("cmp",1:nv,sep=""))		# Males
+(LabEm	<- paste("emp",1:nv,sep=""))		# Males
+(LabAf	<- paste("afp",1:nv,sep=""))		# Females
+(LabCf	<- paste("cfp",1:nv,sep=""))		# Females
+(LabEf	<- paste("efp",1:nv,sep=""))		# Females
+
+# Create objects for Start values
+Stpathm	<-c(.4) 			# change here according to the variances of the variables
+Stcorm	<-c(.2)
+
+Stpathf	<-c(.6) 		
+Stcorf	<-c(.2)
+(Stmean	<-colMeans(mzmData[,1:7],na.rm=TRUE))
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Matrices to estimate Means for Male/Female pairs, OS pairs and singletons
+MeanMM	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMM, 	name="expMeanMM" )
+MeanM		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMM, 	name="expMeanM" )
+MeanFF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMFF, 	name="expMeanFF" )
+MeanF		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMF, 	name="expMeanF" )
+MeanMF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMF, 	name="expMeanMF" )
+
+# Define matrices a, c, and e to store a, c, and e path coefficients
+pathAm	<- mxMatrix( type="Diag", nrow=nv, ncol=nv, free=T, values=.6, label=LabAm, name="am")
+pathCm	<- mxMatrix( type="Diag", nrow=nv, ncol=nv, free=T, values=.1, label=LabCm, name="cm")
+pathEm	<- mxMatrix( type="Diag", nrow=nv, ncol=nv, free=T, values=.7, label=LabEm, name="em")
+pathAf	<- mxMatrix( type="Diag", nrow=nv, ncol=nv, free=T, values=.3, label=LabAf, name="af")
+pathCf	<- mxMatrix( type="Diag", nrow=nv, ncol=nv, free=T, values=.3, label=LabCf, name="cf")
+pathEf	<- mxMatrix( type="Diag", nrow=nv, ncol=nv, free=T, values=.6, label=LabEf, name="ef")
+
+# Note, these are the correlations between the latent factors (not the variables)
+rAm		<- mxMatrix( type="Stand", nrow=nv, ncol=nv, free=T, values=Stcorm, label=LabsRAM, lbound=-1, ubound=1, name="Ram" )
+rCm		<- mxMatrix( type="Stand", nrow=nv, ncol=nv, free=T, values=Stcorm, label=LabsRCM, lbound=-1, ubound=1, name="Rcm" )
+rEm		<- mxMatrix( type="Stand", nrow=nv, ncol=nv, free=T, values=Stcorm, label=LabsREM, lbound=-1, ubound=1, name="Rem" )
+rAf		<- mxMatrix( type="Stand", nrow=nv, ncol=nv, free=T, values=Stcorf, label=LabsRAF, lbound=-1, ubound=1, name="Raf" )
+rCf		<- mxMatrix( type="Stand", nrow=nv, ncol=nv, free=T, values=Stcorf, label=LabsRCF, lbound=-1, ubound=1, name="Rcf" )
+rEf		<- mxMatrix( type="Stand", nrow=nv, ncol=nv, free=T, values=Stcorf, label=LabsREF, lbound=-1, ubound=1, name="Ref" )
+
+# Setting the A & C correlations between males and females from the DZ opposite-sex pairs 
+# In this 1st model, rA = .5 (free = F), rC = 1 (free = F), thus both are fixed to the expected values when there is no qualitative sex dif
+rAmf  <- mxMatrix( type="Full", nrow=nv, ncol=nv, labels = c("rao11","rao21","rao31","rao41","rao51","rao61","rao71",
+										 "rao12","rao22","rao32","rao42","rao52","rao62","rao72",
+										 "rao13","rao23","rao33","rao43","rao53","rao63","rao73",
+										 "rao14","rao24","rao34","rao44","rao54","rao64","rao74",
+										 "rao15","rao25","rao35","rao45","rao55","rao65","rao75",
+										 "rao16","rao26","rao36","rao46","rao56","rao66","rao76",
+										 "rao17","rao27","rao37","rao47","rao57","rao67","rao77"), free=F, values=.5, lbound=-.5, ubound=.5, name="Rao" )
+rCmf  <- mxMatrix( type="Full", nrow=nv, ncol=nv, labels =c("rco11","rco21","rco31","rco41","rco51","rco61","rco71",
+										 "rco12","rco22","rco32","rco42","rco52","rco62","rco72",
+										 "rco13","rco23","rco33","rco43","rco53","rco63","rco73",
+										 "rco14","rco24","rco34","rco44","rco54","rco64","rco74",
+										 "rco15","rco25","rco35","rco45","rco55","rco65","rco75",
+										 "rco16","rco26","rco36","rco46","rco56","rco66","rco76",
+										 "rco17","rco27","rco37","rco47","rco57","rco67","rco77") , free=F, values=1, lbound=-1, ubound=1,name="Rco" )
+
+# Algebra to compute the variance components
+# Matrices generated to hold A, C and E computed Variance Components
+covAm		<- mxAlgebra( expression=am %*% (Ram) %*% t(am), name="Am")
+covCm		<- mxAlgebra( expression=cm %*% (Rcm) %*% t(cm), name="Cm")
+covEm		<- mxAlgebra( expression=em %*% (Rem) %*% t(em), name="Em")
+covAf		<- mxAlgebra( expression=af %*% (Raf) %*% t(af), name="Af")
+covCf		<- mxAlgebra( expression=cf %*% (Rcf) %*% t(cf), name="Cf")
+covEf		<- mxAlgebra( expression=ef %*% (Ref) %*% t(ef), name="Ef")
+
+# Algebra to compute standardized variance components
+covM		<- mxAlgebra( expression=Am+Cm+Em, name="Vm")
+covF		<- mxAlgebra( expression=Af+Cf+Ef, name="Vf")
+StAm		<- mxAlgebra( expression=Am/Vm, name="hm2")
+StCm		<- mxAlgebra( expression=Cm/Vm, name="cm2")
+StEm		<- mxAlgebra( expression=Em/Vm, name="em2")
+StAf		<- mxAlgebra( expression=Af/Vf, name="hf2")
+StCf		<- mxAlgebra( expression=Cf/Vf, name="cf2")
+StEf		<- mxAlgebra( expression=Ef/Vf, name="ef2")
+
+# Algebra to get the genetic, C and E correlations between the variables
+# We get these by standardizing the A, C and E 7x7 covariance matrices
+MId		<- mxMatrix( type="Iden", nrow=nv, ncol=nv, name="id7" )
+mRa		<- mxAlgebra( expression= solve(sqrt(id7*Am))  %&% Am , name="ram")
+mRc		<- mxAlgebra( expression= solve(sqrt(id7*Cm))  %&% Cm , name="rcm")
+mRe		<- mxAlgebra( expression= solve(sqrt(id7*Em))  %&% Em , name="rem")
+fRa		<- mxAlgebra( expression= solve(sqrt(id7*Af))  %&% Af , name="raf")
+fRc		<- mxAlgebra( expression= solve(sqrt(id7*Cf))  %&% Cf , name="rcf")
+fRe		<- mxAlgebra( expression= solve(sqrt(id7*Ef))  %&% Ef , name="ref")
+
+Rphm		<- mxAlgebra( expression= solve(sqrt(id7*Vm))  %&% Vm , name="rm")
+Rphf		<- mxAlgebra( expression= solve(sqrt(id7*Vf))  %&% Vf , name="rf")
+
+# Algebra to compute Rph-A, Rph-C & Rph-E (note: need to expand if you want this for more than two variables)
+rph21m	<- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[2,1]*sqrt(hm2[2,2])),  
+                                         (sqrt(cm2[1,1])*rcm[2,1]*sqrt(cm2[2,2])), 
+                                         (sqrt(em2[1,1])*rem[2,1]*sqrt(em2[2,2])) ), name="Rph21M" )
+rph31m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[3,1]*sqrt(hm2[3,3])),  
+                                         (sqrt(cm2[1,1])*rcm[3,1]*sqrt(cm2[3,3])), 
+                                         (sqrt(em2[1,1])*rem[3,1]*sqrt(em2[3,3])) ), name="Rph31M" )
+rph41m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[4,1]*sqrt(hm2[4,4])),  
+                                         (sqrt(cm2[1,1])*rcm[4,1]*sqrt(cm2[4,4])), 
+                                         (sqrt(em2[1,1])*rem[4,1]*sqrt(em2[4,4])) ), name="Rph41M" )
+rph51m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[5,1]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[1,1])*rcm[5,1]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[1,1])*rem[5,1]*sqrt(em2[5,5])) ), name="Rph51M" )
+rph61m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[6,1]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[1,1])*rcm[6,1]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[1,1])*rem[6,1]*sqrt(em2[6,6])) ), name="Rph61M" )
+rph71m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[7,1]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[1,1])*rcm[7,1]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[1,1])*rem[7,1]*sqrt(em2[7,7])) ), name="Rph71M" )
+rph32m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[3,2]*sqrt(hm2[3,3])),  
+                                         (sqrt(cm2[2,2])*rcm[3,2]*sqrt(cm2[3,3])), 
+                                         (sqrt(em2[2,2])*rem[3,2]*sqrt(em2[3,3])) ), name="Rph32M" )
+rph42m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[4,2]*sqrt(hm2[4,4])),  
+                                         (sqrt(cm2[2,2])*rcm[4,2]*sqrt(cm2[4,4])), 
+                                         (sqrt(em2[2,2])*rem[4,2]*sqrt(em2[4,4])) ), name="Rph42M" )
+rph52m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[5,2]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[2,2])*rcm[5,2]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[2,2])*rem[5,2]*sqrt(em2[5,5])) ), name="Rph52M" )
+rph62m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[6,2]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[2,2])*rcm[6,2]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[2,2])*rem[6,2]*sqrt(em2[6,6])) ), name="Rph62M" )
+rph72m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[7,2]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[2,2])*rcm[7,2]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[2,2])*rem[7,2]*sqrt(em2[7,7])) ), name="Rph72M" )
+rph43m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[4,3]*sqrt(hm2[4,4])),  
+                                         (sqrt(cm2[3,3])*rcm[4,3]*sqrt(cm2[4,4])), 
+                                         (sqrt(em2[3,3])*rem[4,3]*sqrt(em2[4,4])) ), name="Rph43M" )
+rph53m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[5,3]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[3,3])*rcm[5,3]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[3,3])*rem[5,3]*sqrt(em2[5,5])) ), name="Rph53M" )
+rph63m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[6,3]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[3,3])*rcm[6,3]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[3,3])*rem[6,3]*sqrt(em2[6,6])) ), name="Rph63M" )
+rph73m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[7,3]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[3,3])*rcm[7,3]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[3,3])*rem[7,3]*sqrt(em2[7,7])) ), name="Rph73M" )
+rph54m <- mxAlgebra( expression= cbind ( (sqrt(hm2[4,4])*ram[5,4]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[4,4])*rcm[5,4]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[4,4])*rem[5,4]*sqrt(em2[5,5])) ), name="Rph54M" )
+rph64m <- mxAlgebra( expression= cbind ( (sqrt(hm2[4,4])*ram[6,4]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[4,4])*rcm[6,4]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[4,4])*rem[6,4]*sqrt(em2[6,6])) ), name="Rph64M" )
+rph74m <- mxAlgebra( expression= cbind ( (sqrt(hm2[4,4])*ram[7,4]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[4,4])*rcm[7,4]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[4,4])*rem[7,4]*sqrt(em2[7,7])) ), name="Rph74M" )
+rph65m <- mxAlgebra( expression= cbind ( (sqrt(hm2[5,5])*ram[6,5]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[5,5])*rcm[6,5]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[5,5])*rem[6,5]*sqrt(em2[6,6])) ), name="Rph65M" )
+rph75m <- mxAlgebra( expression= cbind ( (sqrt(hm2[5,5])*ram[7,5]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[5,5])*rcm[7,5]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[5,5])*rem[7,5]*sqrt(em2[7,7])) ), name="Rph75M" )
+rph76m <- mxAlgebra( expression= cbind ( (sqrt(hm2[6,6])*ram[7,6]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[6,6])*rcm[7,6]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[6,6])*rem[7,6]*sqrt(em2[7,7])) ), name="Rph76M" )
+
+rph21f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[2,1]*sqrt(hf2[2,2])),  
+                                         (sqrt(cf2[1,1])*rcf[2,1]*sqrt(cf2[2,2])), 
+                                         (sqrt(ef2[1,1])*ref[2,1]*sqrt(ef2[2,2])) ), name="Rph21F" )
+rph31f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[3,1]*sqrt(hf2[3,3])),  
+                                         (sqrt(cf2[1,1])*rcf[3,1]*sqrt(cf2[3,3])), 
+                                         (sqrt(ef2[1,1])*ref[3,1]*sqrt(ef2[3,3])) ), name="Rph31F" )
+rph41f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[4,1]*sqrt(hf2[4,4])),  
+                                         (sqrt(cf2[1,1])*rcf[4,1]*sqrt(cf2[4,4])), 
+                                         (sqrt(ef2[1,1])*ref[4,1]*sqrt(ef2[4,4])) ), name="Rph41F" )
+rph51f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[5,1]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[1,1])*rcf[5,1]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[1,1])*ref[5,1]*sqrt(ef2[5,5])) ), name="Rph51F" )
+rph61f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[6,1]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[1,1])*rcf[6,1]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[1,1])*ref[6,1]*sqrt(ef2[6,6])) ), name="Rph61F" )
+rph71f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[7,1]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[1,1])*rcf[7,1]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[1,1])*ref[7,1]*sqrt(ef2[7,7])) ), name="Rph71F" )
+rph32f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[3,2]*sqrt(hf2[3,3])),  
+                                         (sqrt(cf2[2,2])*rcf[3,2]*sqrt(cf2[3,3])), 
+                                         (sqrt(ef2[2,2])*ref[3,2]*sqrt(ef2[3,3])) ), name="Rph32F" )
+rph42f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[4,2]*sqrt(hf2[4,4])),  
+                                         (sqrt(cf2[2,2])*rcf[4,2]*sqrt(cf2[4,4])), 
+                                         (sqrt(ef2[2,2])*ref[4,2]*sqrt(ef2[4,4])) ), name="Rph42F" )
+rph52f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[5,2]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[2,2])*rcf[5,2]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[2,2])*ref[5,2]*sqrt(ef2[5,5])) ), name="Rph52F" )
+rph62f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[6,2]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[2,2])*rcf[6,2]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[2,2])*ref[6,2]*sqrt(ef2[6,6])) ), name="Rph62F" )
+rph72f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[7,2]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[2,2])*rcf[7,2]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[2,2])*ref[7,2]*sqrt(ef2[7,7])) ), name="Rph72F" )
+rph43f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[4,3]*sqrt(hf2[4,4])),  
+                                         (sqrt(cf2[3,3])*rcf[4,3]*sqrt(cf2[4,4])), 
+                                         (sqrt(ef2[3,3])*ref[4,3]*sqrt(ef2[4,4])) ), name="Rph43F" )
+rph53f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[5,3]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[3,3])*rcf[5,3]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[3,3])*ref[5,3]*sqrt(ef2[5,5])) ), name="Rph53F" )
+rph63f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[6,3]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[3,3])*rcf[6,3]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[3,3])*ref[6,3]*sqrt(ef2[6,6])) ), name="Rph63F" )
+rph73f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[7,3]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[3,3])*rcf[7,3]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[3,3])*ref[7,3]*sqrt(ef2[7,7])) ), name="Rph73F" )
+rph54f <- mxAlgebra( expression= cbind ( (sqrt(hf2[4,4])*raf[5,4]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[4,4])*rcf[5,4]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[4,4])*ref[5,4]*sqrt(ef2[5,5])) ), name="Rph54F" )
+rph64f <- mxAlgebra( expression= cbind ( (sqrt(hf2[4,4])*raf[6,4]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[4,4])*rcf[6,4]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[4,4])*ref[6,4]*sqrt(ef2[6,6])) ), name="Rph64F" )
+rph74f <- mxAlgebra( expression= cbind ( (sqrt(hf2[4,4])*raf[7,4]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[4,4])*rcf[7,4]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[4,4])*ref[7,4]*sqrt(ef2[7,7])) ), name="Rph74F" )
+rph65f <- mxAlgebra( expression= cbind ( (sqrt(hf2[5,5])*raf[6,5]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[5,5])*rcf[6,5]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[5,5])*ref[6,5]*sqrt(ef2[6,6])) ), name="Rph65F" )
+rph75f <- mxAlgebra( expression= cbind ( (sqrt(hf2[5,5])*raf[7,5]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[5,5])*rcf[7,5]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[5,5])*ref[7,5]*sqrt(ef2[7,7])) ), name="Rph75F" )
+rph76f <- mxAlgebra( expression= cbind ( (sqrt(hf2[6,6])*raf[7,6]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[6,6])*rcf[7,6]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[6,6])*ref[7,6]*sqrt(ef2[7,7])) ), name="Rph76F" )
+
+# Algebra for expected Variance/Covariance Matrices in MZ & DZ twins
+covMZM	<- mxAlgebra( expression= rbind  ( 	cbind(Am+Cm+Em, Am+Cm),		
+                                           cbind(Am+Cm, Am+Cm+Em))  		, 						name="expCovMZM")
+covMZF	<- mxAlgebra( expression= rbind  ( 	cbind(Af+Cf+Ef, Af+Cf),		
+                                           cbind(Af+Cf, Af+Cf+Ef))  		, 						name="expCovMZF")
+covDZM	<- mxAlgebra( expression= rbind  ( 	cbind(Am+Cm+Em, 0.5%x%Am+Cm),	
+                                           cbind(0.5%x%Am+Cm, Am+Cm+Em))		, 					name="expCovDZM")
+covDZF	<- mxAlgebra( expression= rbind  ( 	cbind(Af+Cf+Ef, 0.5%x%Af+Cf),	
+                                           cbind(0.5%x%Af+Cf, Af+Cf+Ef))		, 					name="expCovDZF")
+# corrected model below!! May 2020
+covDZO <- mxAlgebra( expression= rbind  (     cbind( Am+Cm+Em, 		am%*%Rao%*%t(af) + cm%*%Rco%*%t(cf) ), 
+                                              cbind( am%*%Rao%*%t(af) + cm%*%Rco%*%t(cf), 	Af+Cf+Ef) ), 	name="expCovDZO")                 
+
+covMs		<- mxAlgebra( expression= Am+Cm+Em 	, name="expCovMSing")
+
+covFs		<- mxAlgebra( expression= Af+Cf+Ef 	, name="expCovFSing")
+
+# Data objects for Multiple Groups
+dataMZM	<-mxData(mzmData, type="raw")
+dataMZF	<-mxData(mzfData, type="raw")
+dataDZM	<-mxData(dzmData, type="raw")
+dataDZF	<-mxData(dzfData, type="raw")
+dataDZO	<-mxData(dzoData, type="raw")
+dataSM	<-mxData(smData, type="raw")
+dataSF	<-mxData(sfData, type="raw")
+
+# Objective objects for Multiple Groups
+objmzm  	<- mxExpectationNormal( covariance="expCovMZM", means="expMeanMM", dimnames=selVars)
+objdzm	<- mxExpectationNormal( covariance="expCovDZM", means="expMeanMM", dimnames=selVars)
+objmzf	<- mxExpectationNormal( covariance="expCovMZF", means="expMeanFF", dimnames=selVars)
+objdzf  	<- mxExpectationNormal( covariance="expCovDZF", means="expMeanFF", dimnames=selVars)
+objdzo  	<- mxExpectationNormal( covariance="expCovDZO", means="expMeanMF", dimnames=selVars)
+objsM	  	<- mxExpectationNormal( covariance="expCovMSing", means="expMeanM", dimnames=selVarsS)
+objsF	  	<- mxExpectationNormal( covariance="expCovFSing", means="expMeanF", dimnames=selVarsS)
+
+fitFunction 	<- mxFitFunctionML()
+
+# Combine Groups
+parsm		<- list( MeanM, pathAm, pathCm, pathEm, rAm, rCm, rEm, covAm, covCm, covEm, covM, StAm, StCm, StEm, MId, mRa, mRc, mRe, Rphm,
+			   rph21m, rph31m, rph41m, rph51m, rph61m, rph71m, rph32m, rph42m, rph52m, rph62m, rph72m, rph43m, rph53m, rph63m, rph73m, 
+			   rph54m, rph64m, rph74m, rph65m, rph75m, rph76m, fitFunction )
+parsf		<- list( MeanF, pathAf, pathCf, pathEf, rAf, rCf, rEf, covAf, covCf, covEf, covF, StAf, StCf, StEf, MId, fRa, fRc, fRe, Rphf, 
+			   rph21f, rph31f, rph41f, rph51f, rph61f, rph71f, rph32f, rph42f, rph52f, rph62f, rph72f, rph43f, rph53f, rph63f, rph73f, 
+			   rph54f, rph64f, rph74f, rph65f, rph75f, rph76f, fitFunction )
+modelMZM	<- mxModel(parsm, MeanMM, covMZM, dataMZM, objmzm, name="MZM")
+modelDZM	<- mxModel(parsm, MeanMM, covDZM, dataDZM, objdzm, name="DZM")
+modelMZF	<- mxModel(parsf, MeanFF, covMZF, dataMZF, objmzf, name="MZF")
+modelDZF	<- mxModel(parsf, MeanFF, covDZF, dataDZF, objdzf, name="DZF")
+modelDZO	<- mxModel(parsm, parsf, MeanMF, rAmf, rCmf, covDZO, dataDZO, objdzo, name="DZO")
+modelsM	<- mxModel(parsm, covMs, dataSM, objsM, name="SingM")
+modelsF	<- mxModel(parsf, covFs, dataSF, objsF, name="SingF")
+
+minus2ll	<- mxAlgebra(expression=MZM.objective + DZM.objective + MZF.objective + DZF.objective + DZO.objective + SingM.objective + SingF.objective, name="m2LL")
+obj		<- mxFitFunctionAlgebra("m2LL")
+
+ciM  		<- mxCI (c ('MZM.hm2[1,1]', 'MZM.hm2[2,2]', 'MZM.hm2[3,3]', 'MZM.hm2[4,4]', 'MZM.hm2[5,5]', 'MZM.hm2[6,6]', 'MZM.hm2[7,7]', 
+				'MZM.cm2[1,1]', 'MZM.cm2[2,2]', 'MZM.cm2[3,3]', 'MZM.cm2[4,4]', 'MZM.cm2[5,5]', 'MZM.cm2[6,6]', 'MZM.cm2[7,7]', 
+				'MZM.em2[1,1]', 'MZM.em2[2,2]', 'MZM.em2[3,3]', 'MZM.em2[4,4]', 'MZM.em2[5,5]', 'MZM.em2[6,6]', 'MZM.em2[7,7]' ) )		# h2, c2, e2 males
+ciF		<- mxCI (c ('MZF.hf2[1,1]', 'MZF.hf2[2,2]', 'MZF.hf2[3,3]', 'MZF.hf2[4,4]', 'MZF.hf2[5,5]', 'MZF.hf2[6,6]', 'MZF.hf2[7,7]', 
+				'MZF.cf2[1,1]', 'MZF.cf2[2,2]', 'MZF.cf2[3,3]', 'MZF.cf2[4,4]', 'MZF.cf2[5,5]', 'MZF.cf2[6,6]', 'MZF.cf2[7,7]', 
+				'MZF.ef2[1,1]', 'MZF.ef2[2,2]', 'MZF.ef2[3,3]', 'MZF.ef2[4,4]', 'MZF.ef2[5,5]', 'MZF.ef2[6,6]', 'MZF.ef2[7,7]' ) )		# h2, c2, e2 females
+cirph21M	<- mxCI (c ('MZM.Rph21M', 'MZM.Rph31M', 'MZM.Rph41M', 'MZM.Rph51M', 'MZM.Rph61M', 'MZM.Rph71M',
+				'MZM.Rph32M', 'MZM.Rph42M', 'MZM.Rph52M', 'MZM.Rph62M', 'MZM.Rph72M', 'MZM.Rph43M',
+				'MZM.Rph53M', 'MZM.Rph63M', 'MZM.Rph73M', 'MZM.Rph54M', 'MZM.Rph64M', 'MZM.Rph74M',
+				'MZM.Rph65M', 'MZM.Rph75M', 'MZM.Rph76M'))	# rph due to A,C,E males
+cirph21F	<- mxCI (c ('MZF.Rph21F', 'MZF.Rph31F', 'MZF.Rph41F', 'MZF.Rph51F', 'MZF.Rph61F', 'MZF.Rph71F',
+				'MZF.Rph32F', 'MZF.Rph42F', 'MZF.Rph52F', 'MZF.Rph62F', 'MZF.Rph72F', 'MZF.Rph43F', 
+				'MZF.Rph53F', 'MZF.Rph63F', 'MZF.Rph73F', 'MZF.Rph54F', 'MZF.Rph64F', 'MZF.Rph74F',
+				'MZF.Rph65F', 'MZF.Rph75F', 'MZF.Rph76F'))  	# rph due to A,C,E females
+ciRM	  	<- mxCI (c ('MZM.ram[2,1]', 'MZM.rcm[2,1]', 'MZM.rem[2,1]', 'MZM.ram[3,1]', 'MZM.rcm[3,1]', 'MZM.rem[3,1]', 'MZM.ram[4,1]', 'MZM.rcm[4,1]', 'MZM.rem[4,1]', 'MZM.ram[5,1]', 'MZM.rcm[5,1]', 'MZM.rem[5,1]', 'MZM.ram[6,1]', 'MZM.rcm[6,1]', 'MZM.rem[6,1]', 'MZM.ram[7,1]', 'MZM.rcm[7,1]', 'MZM.rem[7,1]',
+				'MZM.ram[3,2]', 'MZM.rcm[3,2]', 'MZM.rem[3,2]', 'MZM.ram[4,2]', 'MZM.rcm[4,2]', 'MZM.rem[4,2]', 'MZM.ram[5,2]', 'MZM.rcm[5,2]', 'MZM.rem[5,2]', 'MZM.ram[6,2]', 'MZM.rcm[6,2]', 'MZM.rem[6,2]', 'MZM.ram[7,2]', 'MZM.rcm[7,2]', 'MZM.rem[7,2]',
+				'MZM.ram[4,3]', 'MZM.rcm[4,3]', 'MZM.rem[4,3]', 'MZM.ram[5,3]', 'MZM.rcm[5,3]', 'MZM.rem[5,3]', 'MZM.ram[6,3]', 'MZM.rcm[6,3]', 'MZM.rem[6,3]', 'MZM.ram[7,3]', 'MZM.rcm[7,3]', 'MZM.rem[7,3]',
+				'MZM.ram[5,4]', 'MZM.rcm[5,4]', 'MZM.rem[5,4]', 'MZM.ram[6,4]', 'MZM.rcm[6,4]', 'MZM.rem[6,4]', 'MZM.ram[7,4]', 'MZM.rcm[7,4]', 'MZM.rem[7,4]',
+				'MZM.ram[6,5]', 'MZM.rcm[6,5]', 'MZM.rem[6,5]', 'MZM.ram[7,5]', 'MZM.rcm[7,5]', 'MZM.rem[7,5]',
+				'MZM.ram[7,6]', 'MZM.rcm[7,6]', 'MZM.rem[7,6]'))		# A,C,E cor between CMR-AM males
+ciRF		<- mxCI (c ('MZF.raf[2,1]', 'MZF.rcf[2,1]', 'MZF.ref[2,1]', 'MZF.raf[3,1]', 'MZF.rcf[3,1]', 'MZF.ref[3,1]', 'MZF.raf[4,1]', 'MZF.rcf[4,1]', 'MZF.ref[4,1]', 'MZF.raf[5,1]', 'MZF.rcf[5,1]', 'MZF.ref[5,1]', 'MZF.raf[6,1]', 'MZF.rcf[6,1]', 'MZF.ref[6,1]', 'MZF.raf[7,1]', 'MZF.rcf[7,1]', 'MZF.ref[7,1]',
+				'MZF.raf[3,2]', 'MZF.rcf[3,2]', 'MZF.ref[3,2]', 'MZF.raf[4,2]', 'MZF.rcf[4,2]', 'MZF.ref[4,2]', 'MZF.raf[5,2]', 'MZF.rcf[5,2]', 'MZF.ref[5,2]', 'MZF.raf[6,2]', 'MZF.rcf[6,2]', 'MZF.ref[6,2]', 'MZF.raf[7,2]', 'MZF.rcf[7,2]', 'MZF.ref[7,2]',
+				'MZF.raf[4,3]', 'MZF.rcf[4,3]', 'MZF.ref[4,3]', 'MZF.raf[5,3]', 'MZF.rcf[5,3]', 'MZF.ref[5,3]', 'MZF.raf[6,3]', 'MZF.rcf[6,3]', 'MZF.ref[6,3]', 'MZF.raf[7,3]', 'MZF.rcf[7,3]', 'MZF.ref[7,3]',
+				'MZF.raf[5,4]', 'MZF.rcf[5,4]', 'MZF.ref[5,4]', 'MZF.raf[6,4]', 'MZF.rcf[6,4]', 'MZF.ref[6,4]', 'MZF.raf[7,4]', 'MZF.rcf[7,4]', 'MZF.ref[7,4]',
+				'MZF.raf[6,5]', 'MZF.rcf[6,5]', 'MZF.ref[6,5]', 'MZF.raf[7,5]', 'MZF.rcf[7,5]', 'MZF.ref[7,5]',
+				'MZF.raf[7,6]', 'MZF.rcf[7,6]', 'MZF.ref[7,6]'))	      # A,C,E cor between CMR-AM females
+#cirPhM    	<- mxCI(c('MZM.rm[2,1]'))                                               # rPh Males
+#cirPhF    	<- mxCI(c('MZF.rf[2,1]'))                                               # rPh Females
+
+HetACEModel	<-mxModel('HetACE', modelMZM, modelDZM, modelMZF, modelDZF, modelDZO, modelsM, modelsF, minus2ll, obj,ciM, ciF, cirph21M,cirph21F,ciRM,ciRF) 
+
+
+# ------------------------------------------------------------------------------
+# RUN Quantitative Heterogeneity ACE Model 
+HetACEFit    <- mxTryHard(HetACEModel, intervals=F)
+(HetACESumm  <- summary(HetACEFit, verbose = F))
+
+#Generate parameter estimates in a more convenient way, shorter
+
+mxEval (MZM.hm2, HetACEFit)
+mxEval (MZM.cm2, HetACEFit)
+mxEval (MZM.em2, HetACEFit)
+
+#Generate parameter estimates for females
+
+mxEval (MZF.hf2, HetACEFit)
+mxEval (MZF.cf2, HetACEFit)
+mxEval (MZF.ef2, HetACEFit)
+
+#---------------------------------------------------------------------
+# Run Model II-2 Allow rCmf to be estimated
+# Adds qualitative sex dif for C to the first model
+#---------------------------------------------------------------------
+HetACEcModel	<-mxModel(HetACEFit, name="HetACEc")
+HetACEcModel	<-omxSetParameters(HetACEcModel, labels =c("rco11","rco21","rco31","rco41","rco51","rco61","rco71",
+										 "rco12","rco22","rco32","rco42","rco52","rco62","rco72",
+										 "rco13","rco23","rco33","rco43","rco53","rco63","rco73",
+										 "rco14","rco24","rco34","rco44","rco54","rco64","rco74",
+										 "rco15","rco25","rco35","rco45","rco55","rco65","rco75",
+										 "rco16","rco26","rco36","rco46","rco56","rco66","rco76",
+										 "rco17","rco27","rco37","rco47","rco57","rco67","rco77"), free=T, values=1, lbound=-1, ubound=1)
+#HetACEcFit		<-OmxAssignFirstparameters(HetACEcModel)
+HetACEcFit		<-mxTryHard(HetACEcModel, intervals=F, extraTries=100)
+(HetACEcSumm	<-summary(HetACEcFit))
+
+mxEval(MZM.Vm, HetACEcFit)
+mxEval(MZM.hm2, HetACEcFit)
+mxEval(MZM.cm2, HetACEcFit)
+mxEval(MZM.em2, HetACEcFit)
+
+mxEval(MZF.Vf, HetACEcFit)
+mxEval(MZF.hf2, HetACEcFit)
+mxEval(MZF.cf2, HetACEcFit)
+mxEval(MZF.ef2, HetACEcFit)
+
+
+#---------------------------------------------------------------------
+# Run Model II-3 Allow only rAmf to be estimated
+# Adds qualitative sex dif for A to the first model
+#---------------------------------------------------------------------
+
+HetACEaModel	<-mxModel(HetACEFit, name="HetACEa")
+HetACEaModel	<-omxSetParameters(HetACEaModel, labels=  c("rao11","rao21","rao31","rao41","rao51","rao61","rao71",
+										 "rao12","rao22","rao32","rao42","rao52","rao62","rao72",
+										 "rao13","rao23","rao33","rao43","rao53","rao63","rao73",
+										 "rao14","rao24","rao34","rao44","rao54","rao64","rao74",
+										 "rao15","rao25","rao35","rao45","rao55","rao65","rao75",
+										 "rao16","rao26","rao36","rao46","rao56","rao66","rao76",
+										 "rao17","rao27","rao37","rao47","rao57","rao67","rao77"), free=T, values=0.5, lbound=-.5, ubound=.5)
+
+HetACEaFit		<-mxTryHard(HetACEaModel, intervals=F, extraTries=200)
+(HetACEaSumm	<-summary(HetACEaFit, verbose = F))
+
+mxEval(MZM.Vm, HetACEaFit)
+mxEval(MZM.hm2, HetACEaFit)
+mxEval(MZM.cm2, HetACEaFit)
+mxEval(MZM.em2, HetACEaFit)
+
+mxEval(MZF.Vf, HetACEaFit)
+mxEval(MZF.hf2, HetACEaFit)
+mxEval(MZF.cf2, HetACEaFit)
+mxEval(MZF.ef2, HetACEaFit)
+
+#---------------------------------------------------------------------
+# Model II-4a - Specify and run the ACE homogeneity model for h2, c2 and e2 only
+#---------------------------------------------------------------------
+
+HomACE1Model	<-mxModel(HetACEFit, name="HomACE1")
+HomACE1Model	<-omxSetParameters(HomACE1Model, 	labels=	c("amp1", "amp2", "amp3", "amp4", "amp5", "amp6", "amp7"), free=T, values=c(.8,.6,-.3,.6,.4,-.6,-.5), 
+									newlabels=	c("afp1", "afp2", "afp3", "afp4", "afp5", "afp6", "afp7"))
+HomACE1Model	<-omxSetParameters(HomACE1Model, 	labels=	c("cmp1", "cmp2", "cmp3", "cmp4", "cmp5", "cmp6", "cmp7"), free=T, values=c(-.4), 
+									newlabels=	c("cfp1", "cfp2", "cfp3", "cfp4", "cfp5", "cfp6", "cfp7"))
+HomACE1Model	<-omxSetParameters(HomACE1Model, 	labels=	c("emp1", "emp2", "emp3", "emp4", "emp5", "emp6", "emp7"), free=T, values=c(.6), 
+									newlabels=	c("efp1", "efp2", "efp3", "efp4", "efp5", "efp6", "efp7"))
+HomACE1Model	<-omxSetParameters(HomACE1Model, 	labels=	c("Ram1",  "Ram2",  "Ram3",  "Ram4",  "Ram5",  "Ram6",  "Ram7",  "Ram8",  "Ram9",  "Ram10",
+											  "Ram11", "Ram12", "Ram13", "Ram14", "Ram15", "Ram16", "Ram17", "Ram18", "Ram19", "Ram20", "Ram21" ), free=T, values=Stcorf, 
+									newlabels=	c("Raf1",  "Raf2",  "Raf3",  "Raf4",  "Raf5",  "Raf6",  "Raf7",  "Raf8",  "Raf9",  "Raf10",
+											  "Raf11", "Raf12", "Raf13", "Raf14", "Raf15", "Raf16", "Raf17", "Raf18", "Raf19", "Raf20", "Raf21" ))
+HomACE1Model	<-omxSetParameters(HomACE1Model, 	labels=	c("Rcm1",  "Rcm2",  "Rcm3",  "Rcm4",  "Rcm5",  "Rcm6",  "Rcm7",  "Rcm8",  "Rcm9",  "Rcm10",
+											  "Rcm11", "Rcm12", "Rcm13", "Rcm14", "Rcm15", "Rcm16", "Rcm17", "Rcm18", "Rcm19", "Rcm20", "Rcm21"), free=T, values=Stcorf, 
+									newlabels=	c("Rcf1",  "Rcf2",  "Rcf3",  "Rcf4",  "Rcf5",  "Rcf6",  "Rcf7",  "Rcf8",  "Rcf9",  "Rcf10",
+											  "Rcf11", "Rcf12", "Rcf13", "Rcf14", "Rcf15", "Rcf16", "Rcf17", "Rcf18", "Rcf19", "Rcf20", "Rcf21"))
+HomACE1Model	<-omxSetParameters(HomACE1Model, 	labels=	c("Rem1",  "Rem2",  "Rem3",  "Rem4",  "Rem5",  "Rem6",  "Rem7",  "Rem8",  "Rem9",  "Rem10",
+											  "Rem11", "Rem12", "Rem13", "Rem14", "Rem15", "Rem16", "Rem17", "Rem18", "Rem19", "Rem20", "Rem21"), free=T, values=Stcorf, 
+									newlabels=	c("Ref1",  "Ref2",  "Ref3",  "Ref4",  "Ref5",  "Ref6",  "Ref7",  "Ref8",  "Ref9",  "Ref10",
+											  "Ref11", "Ref12", "Ref13", "Ref14", "Ref15", "Ref16", "Ref17", "Ref18", "Ref19", "Ref20", "Ref21"))
+HomACE1Model	<-omxAssignFirstParameters(HomACE1Model) 
+HomACE1Fit		<-mxTryHard(HomACE1Model, intervals=F)
+(HomACE1Summ	<-summary(HomACE1Fit))
+
+
+#Generate parameter estimates (check that hf2, cf2 and ef2 will be the same as hm2, cm2 and em2)
+mxEval(MZM.Vm, HomACE1Fit)
+mxEval(MZM.hm2, HomACE1Fit)
+mxEval(MZM.cm2, HomACE1Fit)
+mxEval(MZM.em2, HomACE1Fit)
+
+mxEval(MZF.Vf, HomACE1Fit)
+mxEval(MZF.hf2, HomACE1Fit)
+mxEval(MZF.cf2, HomACE1Fit)
+mxEval(MZF.ef2, HomACE1Fit)
+
+
+#------------------------------------------------------------------------------------------
+# (II-ii) Specify the HYBRID Quantitative Heterogeneity - Scalar ACE Model, modelling a set of ACE parameters 
+# for males and females separately using same-sex twin pair & DZ-OS PAIRS
+# For scalars, the difference is in the scalars rather than the parameter estimates
+# From univariate analyses, I specify scalars for variables 4,6 and heterogeneity differences for variables 1,2,3,5,6 (scalar fixed to 1 for these)
+# The covariances are unaffected, I allow them to vary between males and females
+#------------------------------------------------------------------------------------------
+nv		<- 7				# number of variables for a twin = 1 in Univariate
+ntv		<- 2*nv			# number of variables for a pair = 2* 1 for Univariate
+nlower	<- ntv*(ntv+1)/2 		# number of free elements in a lower matrix ntv*ntv
+ncor		<-(nv*(nv+1)/2)-nv	# number of free elements in a correlation matrix nv*nv
+
+selVars	<- c('edu1','electtranct1','finstrain1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+			'edu2','electtranct2','finstrain2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+selVarsS 	<- c('edu3','electtranct3','finstrain3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+# Subset data
+# This will generate 5 sub data files for the 5 sex-by-zygosity groups
+mzmData 	<- subdata3[subdata3$sexzyg == 1, selVars]
+dzmData 	<- subdata3[subdata3$sexzyg == 2, selVars]
+mzfData 	<- subdata3[subdata3$sexzyg == 3, selVars]
+dzfData 	<- subdata3[subdata3$sexzyg == 4, selVars]
+dzoData 	<- subdata3[subdata3$sexzyg == 5, selVars]
+
+# Subset singletons
+# This will generate 2 sub data files for the male adn female singelton groups
+smData		<- subset(subdata3, sexzyg == 6, selVarsS)
+sfData		<- subset(subdata3, sexzyg == 7, selVarsS)
+
+# Check sub-data files
+psych::describe(mzmData)
+psych::describe(dzmData)
+psych::describe(mzfData)
+psych::describe(dzfData)
+psych::describe(dzoData)
+psych::describe(smData)
+psych::describe(sfData)
+
+# FIRST, CREATE OBJECTS WITH Labels for the Means, SD, and correlation to ease specification in the body of the model
+
+# Create Labels for the Means Matrices
+(LabMM	<- paste("mm",1:nv,sep=""))		# Male singleton
+(LabMF	<- paste("mf",1:nv,sep=""))		# Female singleton
+(LabMMM	<- c(LabMM,LabMM))				# male-male pairs
+(LabMFF	<- c(LabMF,LabMF))				# female-female pairs
+(LabMMF	<- c(LabMM,LabMF))				# male-female pairs
+
+# Create Labels for the A, C and E latent Factor Correlation Matrices (for the correlation between variables)
+#(LabsRAM		<- paste("Ram",1:ncor,sep=""))		# Males (Twins & singletons)
+#(LabsRCM		<- paste("Rcm",1:ncor,sep=""))		# Males (Twins & singletons)
+#(LabsREM		<- paste("Rem",1:ncor,sep=""))		# Males (Twins & singletons)
+#(LabsRAF		<- paste("Raf",1:ncor,sep=""))	# Females (Twins & singletons)
+#(LabsRCF		<- paste("Rcf",1:ncor,sep=""))		# Females (Twins & singletons)
+#(LabsREF		<- paste("Ref",1:ncor,sep=""))		# Females (Twins & singletons)
+
+# Create Labels for the A, C and E Standard Deviation Matrices (paths from Latent Factors to variables)
+# Note that I constrain the variance components of the first 6 variables to be equal because I specify
+# scalars for these from the univariate models
+
+(LabAm	<- paste("amp", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep=""))
+(LabCm	<- paste("cmp", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep=""))
+(LabEm	<- paste("emp", do.call(c, sapply(seq(1, nv), function(x){ paste(x:nv, x,sep="") })), sep=""))
+(LabAf	<- c("amp11","afp21","afp31","afp41","afp51","afp61","afp71","amp22","afp32",
+			"afp42","afp52","afp62","afp72","amp33","afp43","afp53","afp63","afp73",
+			"amp44","afp54","afp64","afp74","amp55","afp65","afp75","amp66","afp76",
+			"afp77"))		# Females
+(LabCf	<- c("cmp11","cfp21","cfp31","cfp41","cfp51","cfp61","cfp71","cmp22","cfp32",
+			"cfp42","cfp52","cfp62","cfp72","cmp33","cfp43","cfp53","cfp63","cfp73",
+			"cmp44","cfp54","cfp64","cfp74","cmp55","cfp65","cfp75","cmp66","cfp76",
+			"cfp77"))		# Females
+(LabEf	<- c("emp11","efp21","efp31","efp41","efp51","efp61","efp71","emp22","efp32",
+			"efp42","efp52","efp62","efp72","emp33","efp43","efp53","efp63","efp73",
+			"emp44","efp54","efp64","efp74","emp55","efp65","efp75","emp66","efp76",
+			"efp77"))		# Females
+
+# Create Labels for the Scalar Matrix
+(LabS		<- paste("s",1:nv,sep=""))		
+(LabSS	<- c(LabS,LabS))
+(LabNA	<- c("NA","NA","NA","NA","NA","NA","NA"))
+(Labdos	<- c(LabNA,LabS))
+(PatF		<- c(F,F,F,F,F,F,F))	
+(PatT		<- c(F,T,T,T,F,T,F))
+(Pat		<- c(PatF,PatT))
+
+# Create objects for Start values
+StScalar	<-c(1,1,1,1,1,1,1)				# change here to >1 if female variance is larger than males or if it is mixed
+(DumOnes	<-c(1,1,1,1,1,1,1))
+(StSdos	<-c(DumOnes,StScalar))		# Scalar for Males is just 1
+
+(Stmean	<-colMeans(mzmData[,1:7],na.rm=TRUE))
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Matrices to estimate Means for Male/Female pairs, OS pairs and singletons
+MeanMM	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMM, 	name="expMeanMM" )
+MeanM		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMM, 	name="expMeanM" )
+MeanFF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMFF, 	name="expMeanFF" )
+MeanF		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMF, 	name="expMeanF" )
+MeanMF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMF, 	name="expMeanMF" )
+
+# Define matrices a, c, and e to store a, c, and e path coefficients
+pathAm	<- mxMatrix( type="Lower", nrow=nv, ncol=nv, free=T, values=.6, label=LabAm, name="am")
+pathCm	<- mxMatrix( type="Lower", nrow=nv, ncol=nv, free=T, values=.1, label=LabCm, name="cm")
+pathEm	<- mxMatrix( type="Lower", nrow=nv, ncol=nv, free=T, values=.7, label=LabEm, name="em")
+pathAf	<- mxMatrix( type="Lower", nrow=nv, ncol=nv, free=T, values=.6, label=LabAf, name="af")
+pathCf	<- mxMatrix( type="Lower", nrow=nv, ncol=nv, free=T, values=.1, label=LabCf, name="cf")
+pathEf	<- mxMatrix( type="Lower", nrow=nv, ncol=nv, free=T, values=.7, label=LabEf, name="ef")
+
+# Algebra to compute the variance components
+# Matrices generated to hold A, C and E computed Variance Components
+covAm		<- mxAlgebra( expression=am %*% t(am), name="Am")
+covCm		<- mxAlgebra( expression=cm %*% t(cm), name="Cm")
+covEm		<- mxAlgebra( expression=em %*% t(em), name="Em")
+
+covAf		<- mxAlgebra( expression=af %*% t(af), name="Af")
+covCf		<- mxAlgebra( expression=cf %*% t(cf), name="Cf")
+covEf		<- mxAlgebra( expression=ef %*% t(ef), name="Ef")
+
+covAmf	<- mxAlgebra( expression=am %*% t(af), name="Amf")
+covCmf	<- mxAlgebra( expression=cm %*% t(cf), name="Cmf")
+covAfm	<- mxAlgebra( expression=af %*% t(am), name="Afm")
+covCfm	<- mxAlgebra( expression=cf %*% t(cm), name="Cfm")
+
+# Algebra to compute standardized variance components
+covM		<- mxAlgebra( expression=Am+Cm+Em, name="Vm")
+covF		<- mxAlgebra( expression=Af+Cf+Ef, name="Vf")
+StAm		<- mxAlgebra( expression=Am/Vm, name="hm2")
+StCm		<- mxAlgebra( expression=Cm/Vm, name="cm2")
+StEm		<- mxAlgebra( expression=Em/Vm, name="em2")
+StAf		<- mxAlgebra( expression=Af/Vf, name="hf2")
+StCf		<- mxAlgebra( expression=Cf/Vf, name="cf2")
+StEf		<- mxAlgebra( expression=Ef/Vf, name="ef2")
+
+# Algebra to get the genetic, C and E correlations between the variables
+# We get these by standardizing the A, C and E 7x7 covariance matrices
+MId		<- mxMatrix( type="Iden", nrow=nv, ncol=nv, name="id7" )
+mRa		<- mxAlgebra( expression= solve(sqrt(id7*Am))  %&% Am , name="ram")
+mRc		<- mxAlgebra( expression= solve(sqrt(id7*Cm))  %&% Cm , name="rcm")
+mRe		<- mxAlgebra( expression= solve(sqrt(id7*Em))  %&% Em , name="rem")
+fRa		<- mxAlgebra( expression= solve(sqrt(id7*Af))  %&% Af , name="raf")
+fRc		<- mxAlgebra( expression= solve(sqrt(id7*Cf))  %&% Cf , name="rcf")
+fRe		<- mxAlgebra( expression= solve(sqrt(id7*Ef))  %&% Ef , name="ref")
+
+Rphm		<- mxAlgebra( expression= solve(sqrt(id7*Vm))  %&% Vm , name="rm")
+Rphf		<- mxAlgebra( expression= solve(sqrt(id7*Vf))  %&% Vf , name="rf")
+
+# Algebra to compute Rph-A, Rph-C & Rph-E (note: need to expand if you want this for more than two variables)
+rph21m	<- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[2,1]*sqrt(hm2[2,2])),  
+                                         (sqrt(cm2[1,1])*rcm[2,1]*sqrt(cm2[2,2])), 
+                                         (sqrt(em2[1,1])*rem[2,1]*sqrt(em2[2,2])) ), name="Rph21M" )
+rph31m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[3,1]*sqrt(hm2[3,3])),  
+                                         (sqrt(cm2[1,1])*rcm[3,1]*sqrt(cm2[3,3])), 
+                                         (sqrt(em2[1,1])*rem[3,1]*sqrt(em2[3,3])) ), name="Rph31M" )
+rph41m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[4,1]*sqrt(hm2[4,4])),  
+                                         (sqrt(cm2[1,1])*rcm[4,1]*sqrt(cm2[4,4])), 
+                                         (sqrt(em2[1,1])*rem[4,1]*sqrt(em2[4,4])) ), name="Rph41M" )
+rph51m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[5,1]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[1,1])*rcm[5,1]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[1,1])*rem[5,1]*sqrt(em2[5,5])) ), name="Rph51M" )
+rph61m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[6,1]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[1,1])*rcm[6,1]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[1,1])*rem[6,1]*sqrt(em2[6,6])) ), name="Rph61M" )
+rph71m <- mxAlgebra( expression= cbind ( (sqrt(hm2[1,1])*ram[7,1]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[1,1])*rcm[7,1]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[1,1])*rem[7,1]*sqrt(em2[7,7])) ), name="Rph71M" )
+rph32m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[3,2]*sqrt(hm2[3,3])),  
+                                         (sqrt(cm2[2,2])*rcm[3,2]*sqrt(cm2[3,3])), 
+                                         (sqrt(em2[2,2])*rem[3,2]*sqrt(em2[3,3])) ), name="Rph32M" )
+rph42m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[4,2]*sqrt(hm2[4,4])),  
+                                         (sqrt(cm2[2,2])*rcm[4,2]*sqrt(cm2[4,4])), 
+                                         (sqrt(em2[2,2])*rem[4,2]*sqrt(em2[4,4])) ), name="Rph42M" )
+rph52m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[5,2]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[2,2])*rcm[5,2]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[2,2])*rem[5,2]*sqrt(em2[5,5])) ), name="Rph52M" )
+rph62m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[6,2]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[2,2])*rcm[6,2]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[2,2])*rem[6,2]*sqrt(em2[6,6])) ), name="Rph62M" )
+rph72m <- mxAlgebra( expression= cbind ( (sqrt(hm2[2,2])*ram[7,2]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[2,2])*rcm[7,2]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[2,2])*rem[7,2]*sqrt(em2[7,7])) ), name="Rph72M" )
+rph43m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[4,3]*sqrt(hm2[4,4])),  
+                                         (sqrt(cm2[3,3])*rcm[4,3]*sqrt(cm2[4,4])), 
+                                         (sqrt(em2[3,3])*rem[4,3]*sqrt(em2[4,4])) ), name="Rph43M" )
+rph53m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[5,3]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[3,3])*rcm[5,3]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[3,3])*rem[5,3]*sqrt(em2[5,5])) ), name="Rph53M" )
+rph63m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[6,3]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[3,3])*rcm[6,3]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[3,3])*rem[6,3]*sqrt(em2[6,6])) ), name="Rph63M" )
+rph73m <- mxAlgebra( expression= cbind ( (sqrt(hm2[3,3])*ram[7,3]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[3,3])*rcm[7,3]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[3,3])*rem[7,3]*sqrt(em2[7,7])) ), name="Rph73M" )
+rph54m <- mxAlgebra( expression= cbind ( (sqrt(hm2[4,4])*ram[5,4]*sqrt(hm2[5,5])),  
+                                         (sqrt(cm2[4,4])*rcm[5,4]*sqrt(cm2[5,5])), 
+                                         (sqrt(em2[4,4])*rem[5,4]*sqrt(em2[5,5])) ), name="Rph54M" )
+rph64m <- mxAlgebra( expression= cbind ( (sqrt(hm2[4,4])*ram[6,4]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[4,4])*rcm[6,4]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[4,4])*rem[6,4]*sqrt(em2[6,6])) ), name="Rph64M" )
+rph74m <- mxAlgebra( expression= cbind ( (sqrt(hm2[4,4])*ram[7,4]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[4,4])*rcm[7,4]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[4,4])*rem[7,4]*sqrt(em2[7,7])) ), name="Rph74M" )
+rph65m <- mxAlgebra( expression= cbind ( (sqrt(hm2[5,5])*ram[6,5]*sqrt(hm2[6,6])),  
+                                         (sqrt(cm2[5,5])*rcm[6,5]*sqrt(cm2[6,6])), 
+                                         (sqrt(em2[5,5])*rem[6,5]*sqrt(em2[6,6])) ), name="Rph65M" )
+rph75m <- mxAlgebra( expression= cbind ( (sqrt(hm2[5,5])*ram[7,5]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[5,5])*rcm[7,5]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[5,5])*rem[7,5]*sqrt(em2[7,7])) ), name="Rph75M" )
+rph76m <- mxAlgebra( expression= cbind ( (sqrt(hm2[6,6])*ram[7,6]*sqrt(hm2[7,7])),  
+                                         (sqrt(cm2[6,6])*rcm[7,6]*sqrt(cm2[7,7])), 
+                                         (sqrt(em2[6,6])*rem[7,6]*sqrt(em2[7,7])) ), name="Rph76M" )
+
+rph21f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[2,1]*sqrt(hf2[2,2])),  
+                                         (sqrt(cf2[1,1])*rcf[2,1]*sqrt(cf2[2,2])), 
+                                         (sqrt(ef2[1,1])*ref[2,1]*sqrt(ef2[2,2])) ), name="Rph21F" )
+rph31f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[3,1]*sqrt(hf2[3,3])),  
+                                         (sqrt(cf2[1,1])*rcf[3,1]*sqrt(cf2[3,3])), 
+                                         (sqrt(ef2[1,1])*ref[3,1]*sqrt(ef2[3,3])) ), name="Rph31F" )
+rph41f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[4,1]*sqrt(hf2[4,4])),  
+                                         (sqrt(cf2[1,1])*rcf[4,1]*sqrt(cf2[4,4])), 
+                                         (sqrt(ef2[1,1])*ref[4,1]*sqrt(ef2[4,4])) ), name="Rph41F" )
+rph51f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[5,1]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[1,1])*rcf[5,1]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[1,1])*ref[5,1]*sqrt(ef2[5,5])) ), name="Rph51F" )
+rph61f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[6,1]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[1,1])*rcf[6,1]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[1,1])*ref[6,1]*sqrt(ef2[6,6])) ), name="Rph61F" )
+rph71f <- mxAlgebra( expression= cbind ( (sqrt(hf2[1,1])*raf[7,1]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[1,1])*rcf[7,1]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[1,1])*ref[7,1]*sqrt(ef2[7,7])) ), name="Rph71F" )
+rph32f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[3,2]*sqrt(hf2[3,3])),  
+                                         (sqrt(cf2[2,2])*rcf[3,2]*sqrt(cf2[3,3])), 
+                                         (sqrt(ef2[2,2])*ref[3,2]*sqrt(ef2[3,3])) ), name="Rph32F" )
+rph42f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[4,2]*sqrt(hf2[4,4])),  
+                                         (sqrt(cf2[2,2])*rcf[4,2]*sqrt(cf2[4,4])), 
+                                         (sqrt(ef2[2,2])*ref[4,2]*sqrt(ef2[4,4])) ), name="Rph42F" )
+rph52f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[5,2]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[2,2])*rcf[5,2]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[2,2])*ref[5,2]*sqrt(ef2[5,5])) ), name="Rph52F" )
+rph62f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[6,2]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[2,2])*rcf[6,2]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[2,2])*ref[6,2]*sqrt(ef2[6,6])) ), name="Rph62F" )
+rph72f <- mxAlgebra( expression= cbind ( (sqrt(hf2[2,2])*raf[7,2]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[2,2])*rcf[7,2]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[2,2])*ref[7,2]*sqrt(ef2[7,7])) ), name="Rph72F" )
+rph43f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[4,3]*sqrt(hf2[4,4])),  
+                                         (sqrt(cf2[3,3])*rcf[4,3]*sqrt(cf2[4,4])), 
+                                         (sqrt(ef2[3,3])*ref[4,3]*sqrt(ef2[4,4])) ), name="Rph43F" )
+rph53f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[5,3]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[3,3])*rcf[5,3]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[3,3])*ref[5,3]*sqrt(ef2[5,5])) ), name="Rph53F" )
+rph63f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[6,3]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[3,3])*rcf[6,3]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[3,3])*ref[6,3]*sqrt(ef2[6,6])) ), name="Rph63F" )
+rph73f <- mxAlgebra( expression= cbind ( (sqrt(hf2[3,3])*raf[7,3]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[3,3])*rcf[7,3]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[3,3])*ref[7,3]*sqrt(ef2[7,7])) ), name="Rph73F" )
+rph54f <- mxAlgebra( expression= cbind ( (sqrt(hf2[4,4])*raf[5,4]*sqrt(hf2[5,5])),  
+                                         (sqrt(cf2[4,4])*rcf[5,4]*sqrt(cf2[5,5])), 
+                                         (sqrt(ef2[4,4])*ref[5,4]*sqrt(ef2[5,5])) ), name="Rph54F" )
+rph64f <- mxAlgebra( expression= cbind ( (sqrt(hf2[4,4])*raf[6,4]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[4,4])*rcf[6,4]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[4,4])*ref[6,4]*sqrt(ef2[6,6])) ), name="Rph64F" )
+rph74f <- mxAlgebra( expression= cbind ( (sqrt(hf2[4,4])*raf[7,4]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[4,4])*rcf[7,4]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[4,4])*ref[7,4]*sqrt(ef2[7,7])) ), name="Rph74F" )
+rph65f <- mxAlgebra( expression= cbind ( (sqrt(hf2[5,5])*raf[6,5]*sqrt(hf2[6,6])),  
+                                         (sqrt(cf2[5,5])*rcf[6,5]*sqrt(cf2[6,6])), 
+                                         (sqrt(ef2[5,5])*ref[6,5]*sqrt(ef2[6,6])) ), name="Rph65F" )
+rph75f <- mxAlgebra( expression= cbind ( (sqrt(hf2[5,5])*raf[7,5]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[5,5])*rcf[7,5]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[5,5])*ref[7,5]*sqrt(ef2[7,7])) ), name="Rph75F" )
+rph76f <- mxAlgebra( expression= cbind ( (sqrt(hf2[6,6])*raf[7,6]*sqrt(hf2[7,7])),  
+                                         (sqrt(cf2[6,6])*rcf[7,6]*sqrt(cf2[7,7])), 
+                                         (sqrt(ef2[6,6])*ref[7,6]*sqrt(ef2[7,7])) ), name="Rph76F" )
+
+ScalarF	<- mxMatrix( type="Diag", nrow=14, ncol=14, free=c(PatT, PatT), values=c(StScalar,StScalar), label=LabSS, name="ScF")
+ScalarOS	<- mxMatrix( type="Diag", nrow=14, ncol=14, free=Pat, values=StSdos, label=Labdos, name="ScOS")
+ScalarFs	<- mxMatrix( type="Diag", nrow=7, ncol=7, free=PatT, values=StScalar, label=LabS, name="ScFs")
+
+# Algebra for expected Variance/Covariance Matrices in MZ & DZ twins
+covMZM	<- mxAlgebra( expression= rbind  ( 	cbind(Am+Cm+Em, Am+Cm),		
+                                           cbind(Am+Cm, Am+Cm+Em))  		, 						name="expCovMZM")
+covMZF	<- mxAlgebra( expression= ScF %&% (rbind  ( 	cbind(Af+Cf+Ef, Af+Cf),		
+                                           cbind(Af+Cf, Af+Cf+Ef)))  		, 						name="expCovMZF")
+covDZM	<- mxAlgebra( expression= rbind  ( 	cbind(Am+Cm+Em, 0.5%x%Am+Cm),	
+                                           cbind(0.5%x%Am+Cm, Am+Cm+Em))		, 					name="expCovDZM")
+covDZF	<- mxAlgebra( expression= ScF %&% (rbind  ( 	cbind(Af+Cf+Ef, 0.5%x%Af+Cf),	
+                                           cbind(0.5%x%Af+Cf, Af+Cf+Ef)))		, 					name="expCovDZF")
+# corrected model below!! May 2020
+covDZO <- mxAlgebra( expression= ScOS %&% (rbind  (     cbind( Am+Cm+Em, 				0.5%x%Afm+Cfm), 
+                                              cbind( 0.5%x%Amf+Cmf, 	Af+Cf+Ef) )), 	name="expCovDZO")                 
+
+covMs		<- mxAlgebra( expression= Am+Cm+Em, name="expCovMSing")
+
+covFs		<- mxAlgebra( expression= ScFs %&% (Af+Cf+Ef), name="expCovFSing")
+
+# Data objects for Multiple Groups
+dataMZM	<-mxData(mzmData, type="raw")
+dataMZF	<-mxData(mzfData, type="raw")
+dataDZM	<-mxData(dzmData, type="raw")
+dataDZF	<-mxData(dzfData, type="raw")
+dataDZO	<-mxData(dzoData, type="raw")
+dataSM	<-mxData(smData, type="raw")
+dataSF	<-mxData(sfData, type="raw")
+
+# Objective objects for Multiple Groups
+objmzm  	<- mxExpectationNormal( covariance="expCovMZM", means="expMeanMM", dimnames=selVars)
+objdzm	<- mxExpectationNormal( covariance="expCovDZM", means="expMeanMM", dimnames=selVars)
+objmzf	<- mxExpectationNormal( covariance="expCovMZF", means="expMeanFF", dimnames=selVars)
+objdzf  	<- mxExpectationNormal( covariance="expCovDZF", means="expMeanFF", dimnames=selVars)
+objdzo  	<- mxExpectationNormal( covariance="expCovDZO", means="expMeanMF", dimnames=selVars)
+objsM	  	<- mxExpectationNormal( covariance="expCovMSing", means="expMeanM", dimnames=selVarsS)
+objsF	  	<- mxExpectationNormal( covariance="expCovFSing", means="expMeanF", dimnames=selVarsS)
+
+fitFunction 	<- mxFitFunctionML()
+
+# Combine Groups
+parsm		<- list( MeanM, pathAm, pathCm, pathEm, covAm, covCm, covEm, covM, StAm, StCm, StEm, MId, mRa, mRc, mRe, Rphm,
+			   rph21m, rph31m, rph41m, rph51m, rph61m, rph71m, rph32m, rph42m, rph52m, rph62m, rph72m, rph43m, rph53m, rph63m, rph73m, 
+			   rph54m, rph64m, rph74m, rph65m, rph75m, rph76m, fitFunction )
+parsf		<- list( MeanF, pathAf, pathCf, pathEf, covAf, covCf, covEf, covF, StAf, StCf, StEf, MId, fRa, fRc, fRe, Rphf, 
+			   rph21f, rph31f, rph41f, rph51f, rph61f, rph71f, rph32f, rph42f, rph52f, rph62f, rph72f, rph43f, rph53f, rph63f, rph73f, 
+			   rph54f, rph64f, rph74f, rph65f, rph75f, rph76f, fitFunction )
+modelMZM	<- mxModel(parsm, MeanMM, covMZM, dataMZM, objmzm, name="MZM")
+modelDZM	<- mxModel(parsm, MeanMM, covDZM, dataDZM, objdzm, name="DZM")
+modelMZF	<- mxModel(parsf, MeanFF, covMZF, dataMZF, objmzf, ScalarF, name="MZF")
+modelDZF	<- mxModel(parsf, MeanFF, covDZF, dataDZF, objdzf, ScalarF, name="DZF")
+modelDZO	<- mxModel(parsm, parsf, MeanMF, covAmf, covCmf, covAfm, covCfm, covDZO, dataDZO, objdzo, ScalarOS, name="DZO")
+modelsM	<- mxModel(parsm, covMs, dataSM, objsM, name="SingM")
+modelsF	<- mxModel(parsf, covFs, dataSF, objsF, ScalarFs, name="SingF")
+
+minus2ll	<- mxAlgebra(expression=MZM.objective + DZM.objective + MZF.objective + DZF.objective + DZO.objective + SingM.objective + SingF.objective, name="m2LL")
+obj		<- mxFitFunctionAlgebra("m2LL")
+
+ciM  		<- mxCI (c ('MZM.hm2[1,1]', 'MZM.hm2[2,1]', 'MZM.hm2[3,1]', 'MZM.hm2[4,1]', 'MZM.hm2[5,1]', 'MZM.hm2[6,1]', 'MZM.hm2[7,1]', 
+				'MZM.hm2[2,2]', 'MZM.hm2[3,2]', 'MZM.hm2[4,2]', 'MZM.hm2[5,2]', 'MZM.hm2[6,2]', 'MZM.hm2[7,2]', 'MZM.hm2[3,3]', 
+				'MZM.hm2[4,3]', 'MZM.hm2[5,3]', 'MZM.hm2[6,3]', 'MZM.hm2[7,3]', 'MZM.hm2[4,4]', 'MZM.hm2[5,4]', 'MZM.hm2[6,4]', 
+				'MZM.hm2[7,4]', 'MZM.hm2[5,5]', 'MZM.hm2[6,5]', 'MZM.hm2[7,5]', 'MZM.hm2[6,6]', 'MZM.hm2[7,6]', 'MZM.hm2[7,7]', 
+				'MZM.cm2[1,1]', 'MZM.cm2[2,1]', 'MZM.cm2[3,1]', 'MZM.cm2[4,1]', 'MZM.cm2[5,1]', 'MZM.cm2[6,1]', 'MZM.cm2[7,1]', 
+				'MZM.cm2[2,2]', 'MZM.cm2[3,2]', 'MZM.cm2[4,2]', 'MZM.cm2[5,2]', 'MZM.cm2[6,2]', 'MZM.cm2[7,2]', 'MZM.cm2[3,3]', 
+				'MZM.cm2[4,3]', 'MZM.cm2[5,3]', 'MZM.cm2[6,3]', 'MZM.cm2[7,3]', 'MZM.cm2[4,4]', 'MZM.cm2[5,4]', 'MZM.cm2[6,4]', 
+				'MZM.cm2[7,4]', 'MZM.cm2[5,5]', 'MZM.cm2[6,5]', 'MZM.cm2[7,5]', 'MZM.cm2[6,6]', 'MZM.cm2[7,6]', 'MZM.cm2[7,7]', 
+				'MZM.em2[1,1]', 'MZM.em2[2,1]', 'MZM.em2[3,1]', 'MZM.em2[4,1]', 'MZM.em2[5,1]', 'MZM.em2[6,1]', 'MZM.em2[7,1]', 
+				'MZM.em2[2,2]', 'MZM.em2[3,2]', 'MZM.em2[4,2]', 'MZM.em2[5,2]', 'MZM.em2[6,2]', 'MZM.em2[7,2]', 'MZM.em2[3,3]', 
+				'MZM.em2[4,3]', 'MZM.em2[5,3]', 'MZM.em2[6,3]', 'MZM.em2[7,3]', 'MZM.em2[4,4]', 'MZM.em2[5,4]', 'MZM.em2[6,4]', 
+				'MZM.em2[7,4]', 'MZM.em2[5,5]', 'MZM.em2[6,5]', 'MZM.em2[7,5]', 'MZM.em2[6,6]', 'MZM.em2[7,6]', 'MZM.em2[7,7]') )		# h2, c2, e2 males
+ciF		<- mxCI (c ('MZF.hf2[1,1]', 'MZF.hf2[2,1]', 'MZF.hf2[3,1]', 'MZF.hf2[4,1]', 'MZF.hf2[5,1]', 'MZF.hf2[6,1]', 'MZF.hf2[7,1]',
+				'MZF.hf2[2,2]', 'MZF.hf2[3,2]', 'MZF.hf2[4,2]', 'MZF.hf2[5,2]', 'MZF.hf2[6,2]', 'MZF.hf2[7,2]', 'MZF.hf2[3,3]',
+				'MZF.hf2[4,3]', 'MZF.hf2[5,3]', 'MZF.hf2[6,3]', 'MZF.hf2[7,3]', 'MZF.hf2[4,4]', 'MZF.hf2[5,4]', 'MZF.hf2[6,4]',
+				'MZF.hf2[7,4]', 'MZF.hf2[5,5]', 'MZF.hf2[6,5]', 'MZF.hf2[7,5]', 'MZF.hf2[6,6]', 'MZF.hf2[7,6]', 'MZF.hf2[7,7]',
+				'MZF.cf2[1,1]', 'MZF.cf2[2,1]', 'MZF.cf2[3,1]', 'MZF.cf2[4,1]', 'MZF.cf2[5,1]', 'MZF.cf2[6,1]', 'MZF.cf2[7,1]',
+				'MZF.cf2[2,2]', 'MZF.cf2[3,2]', 'MZF.cf2[4,2]', 'MZF.cf2[5,2]', 'MZF.cf2[6,2]', 'MZF.cf2[7,2]', 'MZF.cf2[3,3]',
+				'MZF.cf2[4,3]', 'MZF.cf2[5,3]', 'MZF.cf2[6,3]', 'MZF.cf2[7,3]', 'MZF.cf2[4,4]', 'MZF.cf2[5,4]', 'MZF.cf2[6,4]',
+				'MZF.cf2[7,4]', 'MZF.cf2[5,5]', 'MZF.cf2[6,5]', 'MZF.cf2[7,5]', 'MZF.cf2[6,6]', 'MZF.cf2[7,6]', 'MZF.cf2[7,7]',
+				'MZF.ef2[1,1]', 'MZF.ef2[2,1]', 'MZF.ef2[3,1]', 'MZF.ef2[4,1]', 'MZF.ef2[5,1]', 'MZF.ef2[6,1]', 'MZF.ef2[7,1]',
+				'MZF.ef2[2,2]', 'MZF.ef2[3,2]', 'MZF.ef2[4,2]', 'MZF.ef2[5,2]', 'MZF.ef2[6,2]', 'MZF.ef2[7,2]', 'MZF.ef2[3,3]',
+				'MZF.ef2[4,3]', 'MZF.ef2[5,3]', 'MZF.ef2[6,3]', 'MZF.ef2[7,3]', 'MZF.ef2[4,4]', 'MZF.ef2[5,4]', 'MZF.ef2[6,4]',
+				'MZF.ef2[7,4]', 'MZF.ef2[5,5]', 'MZF.ef2[6,5]', 'MZF.ef2[7,5]', 'MZF.ef2[6,6]', 'MZF.ef2[7,6]', 'MZF.ef2[7,7]') )		# h2, c2, e2 females
+
+HetScACEModel	<-mxModel('HetScACE', modelMZM, modelDZM, modelMZF, modelDZF, modelDZO, modelsM, modelsF, minus2ll, obj,ciM, ciF) 
+
+
+# ------------------------------------------------------------------------------
+# RUN HYBRID ACE Model 
+HetScACEFit    <- mxTryHard(HetScACEModel, intervals=F)
+(HetScACESumm  <- summary(HetScACEFit, verbose = F))
+
+#Generate parameter estimates in a more convenient way, shorter
+
+mxEval (MZM.hm2, HetScACEFit)
+mxEval (MZM.cm2, HetScACEFit)
+mxEval (MZM.em2, HetScACEFit)
+mxEval (MZM.am, HetScACEFit)
+mxEval (MZM.cm, HetScACEFit)
+mxEval (MZM.em, HetScACEFit)
+
+#Generate parameter estimates for females
+
+mxEval (MZF.hf2, HetScACEFit)
+mxEval (MZF.cf2, HetScACEFit)
+mxEval (MZF.ef2, HetScACEFit)
+mxEval (MZF.af, HetScACEFit)
+mxEval (MZF.cf, HetScACEFit)
+mxEval (MZF.ef, HetScACEFit)
+
+#----------------------------------------------------------------
+# Print Comparative Fit Statistics between models
+#----------------------------------------------------------------
+mxCompare(HetACEcFit, HetACEFit)
+mxCompare(HetACEaFit, HetACEFit)
+mxCompare(HetACEFit, HomACE1Fit)
+mxCompare(HetACEFit, HetScACEFit)
+
+
+##################################################################################
+####LATENT FACTOR MODELS##########################################################
+##################################################################################
+
+# --------------------------------------------------------------------------------------------------------
+# 6b	Phenotypic factor correlations	
+# --------------------------------------------------------------------------------------------------------
+nv			<- 7				# number of variables for a twin = 1 in Univariate
+ntv			<- 2*nv			# number of variables for a pair = 2* 1 for Univariate
+nlower		<- ntv*(ntv+1)/2 		# number of free elements in a lower matrix ntv*ntv
+ncor			<-(nv*(nv+1)/2)-nv	# number of free elements in a correlation matrix nv*nv
+nfact			<- 3				# number of Latent Factors for Mediation Model per twin
+nfact2		<- 2*nfact			# number of Latent Factors for Mediation Model per twin
+nfcor			<- (nfact*(nfact+1)/2)-nfact	# number of free elements in a correlation matrix nfact*nfcat
+Groups		<- c("mzm", "dzm", "mzf", "dzf", "dzo", "sm", "sf")
+selVars	<- c('edu1','electtranct1','finstrain1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+			'edu2','electtranct2','finstrain2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+selVarsS 	<- c('edu3','electtranct3','finstrain3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+
+# Subset data
+# This will generate 5 sub data files for the 5 sex-by-zygosity groups
+mzmData 	<- subdata3[subdata3$sexzyg == 1, selVars]
+dzmData 	<- subdata3[subdata3$sexzyg == 2, selVars]
+mzfData 	<- subdata3[subdata3$sexzyg == 3, selVars]
+dzfData 	<- subdata3[subdata3$sexzyg == 4, selVars]
+dzoData 	<- subdata3[subdata3$sexzyg == 5, selVars]
+
+# Subset singletons
+# This will generate 2 sub data files for the male adn female singelton groups
+smData		<- subset(subdata3, sexzyg == 6, selVarsS)
+sfData		<- subset(subdata3, sexzyg == 7, selVarsS)
+
+
+# FIRST, CREATE OBJECTS WITH Labels for the Means, SD, and correlation to ease specification in the body of the model
+
+# Create Labels for the Means Matrices
+(LabMM	<- paste("mm",1:nv,sep=""))		# Male singleton
+(LabMF	<- paste("mf",1:nv,sep=""))		# Female singleton
+(LabMMM	<- c(LabMM,LabMM))			# male-male pairs
+(LabMFF	<- c(LabMF,LabMF))			# female-female pairs
+(LabMMF	<- c(LabMM,LabMF))			# male-female pairs
+
+#(LabEr	<- paste("e",1:nv,sep=""))
+(LabErm	<-c("e1m","e2m","e3m","e4m","e4m","e6m","e6m"))
+(LabErf	<-c("e1f","e2f","e3f","e4f","e4f","e6f","e6f"))
+(PatE  	<- c( T,T,T,T,T,T,T))
+(stE  	<- c( .5,.5,.5,.5,.5,.5,.5))
+
+# Create Labels for the phenotypic Correlation Matrices
+(LabsRphM		<- paste("rm",1:nfcor,sep=""))		# Males (Twins & singletons)
+(LabsRphF		<- paste("rf",1:nfcor,sep=""))		# Females (Twins & singletons)
+
+# Create Labels for Lower Triangular Matrices for twin correlations
+(LabCorMZM <- paste("mzm", do.call(c, sapply(seq(1, nfact), function(x){ paste(x:nfact, x,sep="") })), sep="") )
+(LabCorDZM <- paste("dzm", do.call(c, sapply(seq(1, nfact), function(x){ paste(x:nfact, x,sep="") })), sep="") )
+(LabCorMZF <- paste("mzf", do.call(c, sapply(seq(1, nfact), function(x){ paste(x:nfact, x,sep="") })), sep="") )
+(LabCorDZF <- paste("dzf", do.call(c, sapply(seq(1, nfact), function(x){ paste(x:nfact, x,sep="") })), sep="") )
+(LabCorDZO <- paste("dzo", do.call(c, sapply(seq(1, nfact), function(x){ paste(x:nfact, x,sep="") })), sep="") )
+
+# Create Labels for the Standard Deviation Matrices
+(LabSDM	<- paste("Sdm",1:nfact,sep=""))		# Male singleton
+(LabSDF	<- paste("Sdf",1:nfact,sep=""))		# Female singleton
+(LabSDMM	<- c(LabSDM,LabSDM))			# male-male pairs
+(LabSDFF	<- c(LabSDF,LabSDF))			# female-female pairs
+(LabSDMF	<- c(LabSDM,LabSDF))			# male-female pairs
+
+# Create Labels for the Factor Loadings (1st loadings fixed to 1)
+PatFl	<- c(F,T,T,F,F,F,F,			
+	     F,F,F,F,T,F,F,
+	     F,F,F,F,F,F,T)
+
+StFl	<- c(1,.5,.5,0,0,0,0,
+	     0,0,0,1,.5,0,0,
+	     0,0,0,0,0,1,.5)
+
+LabFlm<- c('l1m','l2m','l3m',NA,NA,NA,NA,
+	      NA,NA,NA,'l4m','l5m',NA,NA,
+	      NA,NA,NA,NA,NA,'l6m','l7m')
+
+LabFlf<- c('l1f','l2f','l3f',NA,NA,NA,NA,
+	      NA,NA,NA,'l4f','l5f',NA,NA,
+	      NA,NA,NA,NA,NA,'l6f','l7f')
+
+# Free parameters
+(Pat  	<- c( rep(TRUE, nv)))
+
+# SECOND, CREATE OBJECTS WITH Starting Values for the matrices above
+
+# Starting values for Means and SD (equal for all groups, does not have to be too specific)
+
+(Stmean			<-colMeans(mzmData[,1:nv],na.rm=TRUE))
+(Stsd 			<-1)
+
+StWithinperson		<-c(.4)
+StBetweenMZ 		<-c(.4)
+StBetweenDZ 		<-c(.4)
+
+
+# --------------------------------------------------------------------------------------------------------------
+# 	
+# I-1	Specify the Constrained Correlation Model 
+#	Note: This output is used in your reports
+# --------------------------------------------------------------------------------------------------------------
+
+# Define matrices to specify the loadings of the dependent variables on the latent factors
+Loadm		<-mxMatrix(type="Full",	nrow=nv, ncol=nfact, free=PatFl, values=StFl, labels=LabFlm, name="FactLm" )
+Ze73		<-mxMatrix("Zero", nv, nfact, free=F, name="Z73")
+LoadTwm	<-mxAlgebra(rbind(cbind(FactLm,Z73), cbind(Z73, FactLm)), name="FactLTwm")
+
+Loadf		<-mxMatrix(type="Full",	nrow=nv, ncol=nfact, free=PatFl, values=StFl, labels=LabFlf, name="FactLf" )
+LoadTwf	<-mxAlgebra(rbind(cbind(FactLf,Z73), cbind(Z73, FactLf)), name="FactLTwf")
+
+LoadTwo	<-mxAlgebra(rbind(cbind(FactLm,Z73), cbind(Z73, FactLf)), name="FactLTwo")
+
+ErPathm	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatE, values=stE, labels=LabErm, name="Erpm" )
+ErPathf	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatE, values=stE, labels=LabErf, name="Erpf" )
+
+Erm		<-mxAlgebra(Erpm %*% t(Erpm), name="Errorm")
+Erf		<-mxAlgebra(Erpf %*% t(Erpf), name="Errorf")
+
+RErm		<-mxMatrix("Diag", nv, nv, free=c(T,T,T,F,F,F,F), values=c(.5,.5,.5,0,0,0,0), labels=c("rem1","rem2","rem3","NA","NA","NA","NA"), name="rErrorm")
+RErf		<-mxMatrix("Diag", nv, nv, free=c(T,T,T,F,F,F,F), values=c(.5,.5,.5,0,0,0,0), labels=c("ref1","ref2","ref3","NA","NA","NA","NA"), name="rErrorf")
+REro		<-mxMatrix("Diag", nv, nv, free=c(T,T,T,F,F,F,F), values=c(.5,.5,.5,0,0,0,0), labels=c("reo1","reo2","reo3","NA","NA","NA","NA"), name="rErroro")
+
+bErm		<-mxAlgebra(Erpm %&% rErrorm, name="BErrorm")
+bErf		<-mxAlgebra(Erpf %&% rErrorf, name="BErrorf")
+bEro		<-mxAlgebra(Erpm %*% rErroro %*% t(Erpf), name="BErroro")
+
+Ze7		<-mxMatrix("Zero", nv, nv, free=F, name="Z7")
+ErTwmzm	<-mxAlgebra(rbind(cbind(Errorm,BErrorm), cbind(BErrorm, Errorm)), name="ErrorTwmzm")
+ErTwmzf	<-mxAlgebra(rbind(cbind(Errorf,BErrorf), cbind(BErrorf, Errorf)), name="ErrorTwmzf")
+ErTwdzm	<-mxAlgebra(rbind(cbind(Errorm,0.5%x%BErrorm), cbind(0.5%x%BErrorm, Errorm)), name="ErrorTwdzm")
+ErTwdzf	<-mxAlgebra(rbind(cbind(Errorf,0.5%x%BErrorf), cbind(0.5%x%BErrorf, Errorf)), name="ErrorTwdzf")
+ErTwdzo	<-mxAlgebra(rbind(cbind(Errorm,BErroro), cbind(BErroro, Errorf)), name="ErrorTwdzo")
+ 
+# Matrices to estimate parameters (Means, SDs, and Cor) in Male pairs and singletons
+MeanMM	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMM, 	name="expMeanMM" )
+SDMM		<-mxMatrix( "Diag", nfact2, nfact2, free=T, 	values=1,		labels=LabSDMM, 	name="sdMM" )
+MeanM		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMM, 	name="expMeanM" )
+SDM		<-mxMatrix( "Diag", nfact, nfact, free=T, 	values=1,			labels=LabSDM, 	name="sdM" )
+RphM		<-mxMatrix( "Stand", nfact, nfact, free=T, 	values=StWithinperson, 		labels=LabsRphM, 	name="withinM") 
+
+# Matrices to estimate parameters (Means, SDs, and Cor) in Female pairs and singletons
+MeanFF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMFF, 	name="expMeanFF" )
+SDFF		<-mxMatrix( "Diag", nfact2, nfact2, free=T, 	values=1,		labels=LabSDFF, 	name="sdFF" )
+MeanF		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMF, 	name="expMeanF" )
+SDF		<-mxMatrix( "Diag", nfact, nfact, free=T, 	values=1,			labels=LabSDF, 	name="sdF" )
+RphF		<-mxMatrix( "Stand", nfact, nfact, free=T, 	values=StWithinperson, 		labels=LabsRphF, 	name="withinF") 
+
+# Matrices to estimate parameters (Means, SDs) in DZO pairs 
+MeanMF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMF, 	name="expMeanMF" )
+SDMF		<-mxMatrix( "Diag", nfact2, nfact2, free=T, 	values=1,		labels=LabSDMF, 	name="sdMF" )
+
+# Matrices to estimate Twin Correlation in MZM 
+MZMb		<-mxMatrix("Symm", nfact, nfact, free=T, values = StBetweenMZ, labels=LabCorMZM , name="BetweenMZM") 
+corMZM	<-mxAlgebra(rbind(cbind(withinM,BetweenMZM), cbind(BetweenMZM, withinM)), name="RMZM")
+FcovMZM	<-mxAlgebra( expression=(sdMM %&% RMZM), name="FactCovMZM" )
+
+# Matrices to estimate Twin Correlation in DZM 
+DZMb		<-mxMatrix("Symm", nfact, nfact, free=T, values = StBetweenDZ, labels=LabCorDZM , name="BetweenDZM") 
+corDZM	<-mxAlgebra(rbind(cbind(withinM,BetweenDZM), cbind(BetweenDZM, withinM)), name="RDZM")
+
+# Matrices to estimate Twin Correlation in MZF 
+MZFb		<-mxMatrix("Symm", nfact, nfact, free=T, values = StBetweenMZ, labels=LabCorMZF , name="BetweenMZF") 
+corMZF	<-mxAlgebra(rbind(cbind(withinF,BetweenMZF), cbind(BetweenMZF, withinF)), name="RMZF")
+FcovMZF	<-mxAlgebra( expression=(sdFF %&% RMZF), name="FactCovMZF" )
+
+# Matrices to estimate Twin Correlation in DZF 
+DZFb		<-mxMatrix("Symm", nfact, nfact, free=T, values = StBetweenDZ, labels=LabCorDZF , name="BetweenDZF") 
+corDZF	<-mxAlgebra(rbind(cbind(withinF,BetweenDZF), cbind(BetweenDZF, withinF)), name="RDZF")
+
+# Matrices to estimate Twin Correlation in DZO 
+DZOb		<-mxMatrix("Symm", nfact, nfact, free=T, values = StBetweenDZ, labels=LabCorDZO , name="BetweenDZO") 
+corDZO	<-mxAlgebra(rbind(cbind(withinM,BetweenDZO), cbind(BetweenDZO, withinF)), name="RDZO")
+
+#Calculator
+# Standardized Factor Loadings
+StFLm		<-mxAlgebra( expression= sqrt(diag2vec( FactLm %&% FactCovMZM[1:3,1:3] / expCovMZM[1:7,1:7])) , name="StandFactm" )
+StFLf		<-mxAlgebra( expression= sqrt(diag2vec( FactLf %&% FactCovMZF[1:3,1:3] / expCovMZF[1:7,1:7])) , name="StandFactf" )
+
+# Standardise error terms of the measured variables
+StErm		<-mxAlgebra( expression= sqrt(diag2vec( Errorm/expCovMZM[1:7,1:7])), name="StandErm" )
+StErf		<-mxAlgebra( expression= sqrt(diag2vec( Errorf/expCovMZF[1:7,1:7])), name="StandErf" )
+
+# Algebra to generate Expected Variance/Covariance Matrices
+CovMZM	<-mxAlgebra( expression=(FactLTwm  %&% (sdMM %&% RMZM)) + ErrorTwmzm, name="expCovMZM" )
+CovDZM	<-mxAlgebra( expression=(FactLTwm  %&% (sdMM %&% RDZM)) + ErrorTwdzm, name="expCovDZM" )
+CovMZF	<-mxAlgebra( expression=(FactLTwf  %&% (sdFF %&% RMZF)) + ErrorTwmzf, name="expCovMZF" )
+CovDZF	<-mxAlgebra( expression=(FactLTwf  %&% (sdFF %&% RDZF)) + ErrorTwdzf, name="expCovDZF" )
+CovDZO	<-mxAlgebra( expression=(FactLTwo  %&% (sdMF %&% RDZO)) + ErrorTwdzo, name="expCovDZO" )
+CovSM		<-mxAlgebra( expression=(FactLm  %&% (sdM %&% withinM)) + Errorm, name="expCovSM" )
+CovSF		<-mxAlgebra( expression=(FactLf  %&% (sdF %&% withinF)) + Errorf, name="expCovSF" )
+
+# Data objects for Multiple Groups
+dataMZM	<-mxData(mzmData, type="raw")
+dataMZF	<-mxData(mzfData, type="raw")
+dataDZM	<-mxData(dzmData, type="raw")
+dataDZF	<-mxData(dzfData, type="raw")
+dataDZO	<-mxData(dzoData, type="raw")
+dataSM	<-mxData(smData, type="raw")
+dataSF	<-mxData(sfData, type="raw")
+
+# Objective objects for Multiple Groups
+objMZM	<-mxExpectationNormal( covariance="expCovMZM", means="expMeanMM", dimnames=selVars )
+objMZF	<-mxExpectationNormal( covariance="expCovMZF", means="expMeanFF", dimnames=selVars )
+objDZM	<-mxExpectationNormal( covariance="expCovDZM", means="expMeanMM", dimnames=selVars )
+objDZF	<-mxExpectationNormal( covariance="expCovDZF", means="expMeanFF", dimnames=selVars )
+objDZO	<-mxExpectationNormal( covariance="expCovDZO", means="expMeanMF", dimnames=selVars )
+objSM		<-mxExpectationNormal( covariance="expCovSM", means="expMeanM", dimnames=selVarsS )
+objSF		<-mxExpectationNormal( covariance="expCovSF", means="expMeanF", dimnames=selVarsS )
+
+fitFunction <- mxFitFunctionML()
+
+# Combine Groups	
+modelMZM	<- mxModel( Loadm, LoadTwm, Ze73, Ze7, ErPathm, Erm, RErm, bErm, ErTwmzm, MeanMM, SDMM, RphM, MZMb, corMZM, CovMZM, FcovMZM, StFLm, StErm, dataMZM, objMZM, fitFunction, name="MZM")
+modelMZF	<- mxModel( Loadf, LoadTwf, Ze73, Ze7, ErPathf, Erf, RErf, bErf, ErTwmzf, MeanFF, SDFF, RphF, MZFb, corMZF, CovMZF, FcovMZF, StFLf, StErf, dataMZF, objMZF, fitFunction, name="MZF")
+modelDZM	<- mxModel( Loadm, LoadTwm, Ze73, Ze7, ErPathm, Erm, RErm, bErm, ErTwdzm, MeanMM, SDMM, RphM, DZMb, corDZM, CovDZM, dataDZM, objDZM, fitFunction, name="DZM")
+modelDZF	<- mxModel( Loadf, LoadTwf, Ze73, Ze7, ErPathf, Erf, RErf, bErf, ErTwdzf, MeanFF, SDFF, RphF, DZFb, corDZF, CovDZF, dataDZF, objDZF, fitFunction, name="DZF")
+modelDZO	<- mxModel( Loadm, Loadf, Ze73, Ze7, LoadTwo, ErPathf, Erf, ErPathm, Erm, REro,  bEro, ErTwdzo, MeanMF, SDMF, RphM, RphF, DZOb, corDZO, CovDZO, dataDZO, objDZO, fitFunction, name="DZO")
+modelSM	<- mxModel( Loadm, ErPathm, Erm, MeanM,  SDM,  RphM, CovSM, dataSM, objSM, fitFunction, name="SingM")
+modelSF	<- mxModel( Loadf, ErPathf, Erf, MeanF,  SDF,  RphF, CovSF, dataSF, objSF, fitFunction, name="SingF")
+
+minus2ll	<- mxAlgebra( expression=MZM.objective + MZF.objective + DZM.objective + DZF.objective + DZO.objective 
+						+ SingM.objective + SingF.objective, name="m2LL" )
+obj		<- mxFitFunctionAlgebra( "m2LL" )
+
+Conf1		<- mxCI (c ('MZM.withinM[2,1]','MZM.withinM[3,1]','MZM.withinM[3,2]') ) # Rph males 
+Conf2		<- mxCI (c ('MZF.withinF[2,1]','MZF.withinF[3,1]','MZF.withinF[3,2]') ) # Rph females
+Conf3		<- mxCI (c ('MZM.BetweenMZM[1,1]','MZM.BetweenMZM[2,1]','MZM.BetweenMZM[3,1]','MZM.BetweenMZM[2,2]','MZM.BetweenMZM[3,2]','MZM.BetweenMZM[3,3]') )  
+Conf4		<- mxCI (c ('MZF.BetweenMZF[1,1]','MZF.BetweenMZF[2,1]','MZF.BetweenMZF[3,1]','MZF.BetweenMZF[2,2]','MZF.BetweenMZF[3,2]','MZF.BetweenMZF[3,3]') ) 
+Conf5		<- mxCI (c ('DZM.BetweenDZM[1,1]','DZM.BetweenDZM[2,1]','DZM.BetweenDZM[3,1]','DZM.BetweenDZM[2,2]','DZM.BetweenDZM[3,2]','DZM.BetweenDZM[3,3]') )  
+Conf6		<- mxCI (c ('DZF.BetweenDZF[1,1]','DZF.BetweenDZF[2,1]','DZF.BetweenDZF[3,1]','DZF.BetweenDZF[2,2]','DZF.BetweenDZF[3,2]','DZF.BetweenDZF[3,3]') ) 
+Conf7		<- mxCI (c ('DZO.BetweenDZO[1,1]','DZO.BetweenDZO[2,1]','DZO.BetweenDZO[3,1]','DZO.BetweenDZO[2,2]','DZO.BetweenDZO[3,2]','DZO.BetweenDZO[3,3]') )  
+Conf8		<- mxCI (c ('MZM.StandFactm','MZM.StandErm','MZM.rErrorm[1,1]','MZM.rErrorm[2,2]','MZM.rErrorm[3,3]') ) 
+Conf9		<- mxCI (c ('MZF.StandFactf','MZF.StandErf','MZF.rErrorf[1,1]','MZF.rErrorf[2,2]','MZF.rErrorf[3,3]') ) 
+
+FactCorModel 	<- mxModel( "FactCor", modelMZM,  modelMZF, modelDZM, modelDZF, modelDZO, modelSM, modelSF, minus2ll, obj, Conf1, Conf2, Conf3, Conf4, Conf5, Conf6, Conf7, Conf8, Conf9)
+
+# -----------------------------------------------------------------------------------------
+
+# (1) Run Constrained Cor Model 
+FactCorFit		<- mxRun(FactCorModel, intervals=F)
+(FactCorSumm 	<- summary(FactCorFit, verbose = F)) # to get the problematic confidence intervals: verbose = F
+
+# A more convenient way to get the output
+mxEval (MZM.RMZM, FactCorFit)
+mxEval (DZM.RDZM, FactCorFit)
+mxEval (MZF.RMZF, FactCorFit)
+mxEval (DZF.RDZF, FactCorFit)
+mxEval (DZO.RDZO, FactCorFit)
+
+
+#---------------------------------------------------------------------
+# Run SubModel for Phenotypic factor correlation model
+#---------------------------------------------------------------------
+
+subFactCorModel	<-mxModel(FactCorFit, name="subFactCor")
+subFactCorModel	<-omxSetParameters(subFactCorModel, labels=  c("rm1","rm2","rm3"), free=T, values=.3, newlabels=  c("rf1","rf2","rf3"))
+subFactCorModel	<-omxSetParameters(subFactCorModel, labels=  c("mzm11","mzm21","mzm31","mzm22","mzm32","mzm33"), free=T, values=.3, newlabels=  c("mzf11","mzf21","mzf31","mzf22","mzf32","mzf33"))
+subFactCorModel	<-omxSetParameters(subFactCorModel, labels=  c("dzm11","dzm21","dzm31","dzm22","dzm32","dzm33"), free=T, values=.3, newlabels=  c("dzf11","dzf21","dzf31","dzf22","dzf32","dzf33"))
+subFactCorModel	<-omxSetParameters(subFactCorModel, labels=  c("dzo11","dzo21","dzo31","dzo22","dzo32","dzo33"), free=T, values=.3, newlabels=  c("dzf11","dzf21","dzf31","dzf22","dzf32","dzf33"))
+subFactCorModel	<-omxAssignFirstParameters(subFactCorModel)
+subFactCorFit	<-mxRun(subFactCorModel, intervals=F)
+(subFactCorSumm	<-summary(subFactCorFit, verbose = F))
+
+mxCompare(FactCorFit, subFactCorFit)
+
+
+# --------------------------------------------------------------------------------------------------------
+# 6b	Phenotypic factor mediation model	
+# --------------------------------------------------------------------------------------------------------
+nv			<- 7				# number of variables for a twin = 1 in Univariate
+ntv			<- 2*nv			# number of variables for a pair = 2* 1 for Univariate
+nlower		<- ntv*(ntv+1)/2 		# number of free elements in a lower matrix ntv*ntv
+ncor			<-(nv*(nv+1)/2)-nv	# number of free elements in a correlation matrix nv*nv
+nfact			<- 3				# number of Latent Factors for Mediation Model per twin
+nfact2		<- 2*nfact			# number of Latent Factors for Mediation Model per twin
+nfcor			<- (nfact*(nfact+1)/2)-nfact	# number of free elements in a correlation matrix nfact*nfcat
+Groups		<- c("mzm", "dzm", "mzf", "dzf", "dzo", "sm", "sf")
+selVars	<- c('edu1','electtranct1','finstrain1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+			'edu2','electtranct2','finstrain2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+selVarsS 	<- c('edu3','electtranct3','finstrain3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+
+# Subset data
+# This will generate 5 sub data files for the 5 sex-by-zygosity groups
+mzmData 	<- subdata3[subdata3$sexzyg == 1, selVars]
+dzmData 	<- subdata3[subdata3$sexzyg == 2, selVars]
+mzfData 	<- subdata3[subdata3$sexzyg == 3, selVars]
+dzfData 	<- subdata3[subdata3$sexzyg == 4, selVars]
+dzoData 	<- subdata3[subdata3$sexzyg == 5, selVars]
+
+# Subset singletons
+# This will generate 2 sub data files for the male adn female singelton groups
+smData		<- subset(subdata3, sexzyg == 6, selVarsS)
+sfData		<- subset(subdata3, sexzyg == 7, selVarsS)
+
+
+# FIRST, CREATE OBJECTS WITH Labels for the Means, SD, and correlation to ease specification in the body of the model
+
+# Create Labels for the Means Matrices
+(LabMM	<- paste("mm",1:nv,sep=""))		# Male singleton
+(LabMF	<- paste("mf",1:nv,sep=""))		# Female singleton
+(LabMMM	<- c(LabMM,LabMM))			# male-male pairs
+(LabMFF	<- c(LabMF,LabMF))			# female-female pairs
+(LabMMF	<- c(LabMM,LabMF))			# male-female pairs
+
+#(LabEr	<- paste("e",1:nv,sep=""))
+(LabErm	<-c("e1m","e2m","e3m","e4m","e4m","e6m","e6m"))
+(LabErf	<-c("e1f","e2f","e3f","e4f","e4f","e6f","e6f"))
+(PatE  	<- c( T,T,T,T,T,T,T))
+(stE  	<- c( .5,.5,.5,.5,.5,.5,.5))
+
+# Create Labels for the phenotypic Correlation Matrices
+LabFactrMZM	<- c('f1rmzm','f2rmzm','f3rmzm')
+LabFactrDZM	<- c('f1rdzm','f2rdzm','f3rdzm')
+
+LabFactrMZF	<- c('f1rmzf','f2rmzf','f3rmzf')
+LabFactrDZF	<- c('f1rdzf','f2rdzf','f3rdzf')
+
+LabFactrDZO	<- c('f1rdzo','f2rdzo','f3rdzo')
+
+# Create Labels for the Standard Deviation Matrices
+(LabSDM	<- paste("Sdm",1:nfact,sep=""))		# Male singleton
+(LabSDF	<- paste("Sdf",1:nfact,sep=""))		# Female singleton
+(LabSDMM	<- c(LabSDM,LabSDM))			# male-male pairs
+(LabSDFF	<- c(LabSDF,LabSDF))			# female-female pairs
+(LabSDMF	<- c(LabSDM,LabSDF))			# male-female pairs
+
+# Create Labels for the Factor Loadings (1st loadings fixed to 1)
+PatFl	<- c(F,T,T,F,F,F,F,			
+	     F,F,F,F,T,F,F,
+	     F,F,F,F,F,F,T)
+
+StFl	<- c(1,.5,.5,0,0,0,0,
+	     0,0,0,1,.5,0,0,
+	     0,0,0,0,0,1,.5)
+
+LabFlm	<- c('l1m','l2m','l3m',NA,NA,NA,NA,
+	 	     NA,NA,NA,'l4m','l5m',NA,NA,
+	 	     NA,NA,NA,NA,NA,'l6m','l7m')
+
+LabFlf	<- c('l1f','l2f','l3f',NA,NA,NA,NA,
+	 	     NA,NA,NA,'l4f','l5f',NA,NA,
+	 	     NA,NA,NA,NA,NA,'l6f','l7f')
+
+PatPhC	<- c(F,TRUE,TRUE,
+		     F,F,TRUE,
+		     F,F,F)
+
+StPhC		<- c(0,.3,.3,
+		     0,0,.3,
+		     0,0,0)
+
+LabPhCm	<- c(NA,'c1on2m','c1on3m',
+		     NA,NA,'c2on3m',	
+		     NA,NA,NA)	 
+
+LabPhCf	<- c(NA,'c1on2f','c1on3f',
+		     NA,NA,'c2on3f',	
+		     NA,NA,NA)	 
+
+# Free parameters
+(Pat  	<- c( rep(TRUE, nv)))
+
+# SECOND, CREATE OBJECTS WITH Starting Values for the matrices above
+
+# Starting values for Means and SD (equal for all groups, does not have to be too specific)
+
+(Stmean			<-colMeans(mzmData[,1:nv],na.rm=TRUE))
+(Stsd 			<-1)
+
+StWithinperson		<-c(.4)
+StBetweenMZ 		<-c(.4)
+StBetweenDZ 		<-c(.4)
+
+# --------------------------------------------------------------------------------------------------------------
+# 	
+# I-1	Specify the Constrained Correlation Model 
+#	Note: This output is used in your reports
+# --------------------------------------------------------------------------------------------------------------
+
+# Define matrices to specify the loadings of the dependent variables on the latent factors
+Loadm		<-mxMatrix(type="Full",	nrow=nv, ncol=nfact, free=PatFl, values=StFl, labels=LabFlm, name="FactLm" )
+Ze73		<-mxMatrix("Zero", nv, nfact, free=F, name="Z73")
+LoadTwm	<-mxAlgebra(rbind(cbind(FactLm,Z73), cbind(Z73, FactLm)), name="FactLTwm")
+
+Loadf		<-mxMatrix(type="Full",	nrow=nv, ncol=nfact, free=PatFl, values=StFl, labels=LabFlf, name="FactLf" )
+LoadTwf	<-mxAlgebra(rbind(cbind(FactLf,Z73), cbind(Z73, FactLf)), name="FactLTwf")
+
+LoadTwo	<-mxAlgebra(rbind(cbind(FactLm,Z73), cbind(Z73, FactLf)), name="FactLTwo")
+
+ErPathm	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatE, values=stE, labels=LabErm, name="Erpm" )
+ErPathf	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatE, values=stE, labels=LabErf, name="Erpf" )
+
+Erm		<-mxAlgebra(Erpm %*% t(Erpm), name="Errorm")
+Erf		<-mxAlgebra(Erpf %*% t(Erpf), name="Errorf")
+
+RErm		<-mxMatrix("Diag", nv, nv, free=c(T,T,T,F,F,F,F), values=c(.5,.5,.5,0,0,0,0), labels=c("rem1","rem2","rem3","NA","NA","NA","NA"), name="rErrorm")
+RErf		<-mxMatrix("Diag", nv, nv, free=c(T,T,T,F,F,F,F), values=c(.5,.5,.5,0,0,0,0), labels=c("ref1","ref2","ref3","NA","NA","NA","NA"), name="rErrorf")
+REro		<-mxMatrix("Diag", nv, nv, free=c(T,T,T,F,F,F,F), values=c(.5,.5,.5,0,0,0,0), labels=c("reo1","reo2","reo3","NA","NA","NA","NA"), name="rErroro")
+
+bErm		<-mxAlgebra(Erpm %&% rErrorm, name="BErrorm")
+bErf		<-mxAlgebra(Erpf %&% rErrorf, name="BErrorf")
+bEro		<-mxAlgebra(Erpm %*% rErroro %*% t(Erpf), name="BErroro")
+
+Ze7		<-mxMatrix("Zero", nv, nv, free=F, name="Z7")
+ErTwmzm	<-mxAlgebra(rbind(cbind(Errorm,BErrorm), cbind(BErrorm, Errorm)), name="ErrorTwmzm")
+ErTwmzf	<-mxAlgebra(rbind(cbind(Errorf,BErrorf), cbind(BErrorf, Errorf)), name="ErrorTwmzf")
+ErTwdzm	<-mxAlgebra(rbind(cbind(Errorm,0.5%x%BErrorm), cbind(0.5%x%BErrorm, Errorm)), name="ErrorTwdzm")
+ErTwdzf	<-mxAlgebra(rbind(cbind(Errorf,0.5%x%BErrorf), cbind(0.5%x%BErrorf, Errorf)), name="ErrorTwdzf")
+ErTwdzo	<-mxAlgebra(rbind(cbind(Errorm,BErroro), cbind(BErroro, Errorf)), name="ErrorTwdzo")
+
+# Define the matrix to hold the Single headed Arrows (causal paths) between the 4 latent variables  
+PhCausm	<-mxMatrix(type="Full",	nrow=nfact, ncol=nfact, free=PatPhC, values=StPhC, labels=LabPhCm, name="PhCm" )
+Ze3		<-mxMatrix("Zero", nfact, nfact, free=F, name="Z3")
+PhCausTwm	<-mxAlgebra( expression= rbind( (cbind(PhCm,Z3)), (cbind(Z3,PhCm))  ), name="PhCTwm" )
+
+# Define the matrix to hold the Single headed Arrows (causal paths) between the 4 latent variables  
+PhCausf	<-mxMatrix(type="Full",	nrow=nfact, ncol=nfact, free=PatPhC, values=StPhC, labels=LabPhCf, name="PhCf" )
+PhCausTwf	<-mxAlgebra( expression= rbind( (cbind(PhCf,Z3)), (cbind(Z3,PhCf))  ), name="PhCTwf" )
+ 
+PhCausTwmf	<-mxAlgebra( expression= rbind( (cbind(PhCm,Z3)), (cbind(Z3,PhCf))  ), name="PhCTwmf" )
+
+# Matrices to estimate parameters (Means, SDs, and Cor) in Male pairs and singletons
+MeanMM	<-mxMatrix( "Full", 1, ntv, free=T, values=c(Stmean,Stmean), 	labels=LabMMM, 	name="expMeanMM" )
+SDMM		<-mxMatrix( "Diag", nfact2, nfact2, free=T, 	values=1,		labels=LabSDMM, 	name="sdMM" )
+MeanM		<-mxMatrix( "Full", 1, nv, free=T, values=c(Stmean), 		labels=LabMM, 	name="expMeanM" )
+SDM		<-mxMatrix( "Diag", nfact, nfact, free=T, 	values=1,			labels=LabSDM, 	name="sdM" )
+FactrMZM	<-mxMatrix(type="Diag",	nrow=nfact, ncol=nfact, free=TRUE, values=.4, labels=LabFactrMZM, lbound=-.999, ubound=.999, name="FcorMZM" )
+FactrDZM	<-mxMatrix(type="Diag",	nrow=nfact, ncol=nfact, free=TRUE, values=.2, labels=LabFactrDZM, lbound=-.999, ubound=.999, name="FcorDZM" )
+
+# Matrices to estimate parameters (Means, SDs, and Cor) in Female pairs and singletons
+MeanFF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMFF, 	name="expMeanFF" )
+SDFF		<-mxMatrix( "Diag", nfact2, nfact2, free=T, 	values=1,		labels=LabSDFF, 	name="sdFF" )
+MeanF		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmean), 		labels=LabMF, 	name="expMeanF" )
+SDF		<-mxMatrix( "Diag", nfact, nfact, free=T, 	values=1,			labels=LabSDF, 	name="sdF" )
+FactrMZF	<-mxMatrix(type="Diag",	nrow=nfact, ncol=nfact, free=TRUE, values=.4, labels=LabFactrMZF, lbound=-.999, ubound=.999, name="FcorMZF" )
+FactrDZF	<-mxMatrix(type="Diag",	nrow=nfact, ncol=nfact, free=TRUE, values=.2, labels=LabFactrDZF, lbound=-.999, ubound=.999, name="FcorDZF" )
+
+FactrDZO	<-mxMatrix(type="Diag",	nrow=nfact, ncol=nfact, free=TRUE, values=.2, labels=LabFactrDZO, lbound=-.999, ubound=.999, name="FcorDZO" )
+
+# Matrices to estimate parameters (Means, SDs) in DZO pairs 
+MeanMF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmean,Stmean), 	labels=LabMMF, 	name="expMeanMF" )
+SDMF		<-mxMatrix( "Diag", nfact2, nfact2, free=T, 	values=1,		labels=LabSDMF, 	name="sdMF" )
+
+# Matrices to estimate Twin Correlation in MZM 
+Id3		<-mxMatrix(type="Iden",	nrow=nfact, ncol=nfact, name="I3" )
+corMZM	<-mxAlgebra( expression= rbind( (cbind(I3,FcorMZM)), (cbind(FcorMZM,I3))  ), name="RMZM")
+corDZM	<-mxAlgebra( expression= rbind( (cbind(I3,FcorDZM)), (cbind(FcorDZM,I3))  ), name="RDZM")
+corMZF	<-mxAlgebra( expression= rbind( (cbind(I3,FcorMZF)), (cbind(FcorMZF,I3))  ), name="RMZF")
+corDZF	<-mxAlgebra( expression= rbind( (cbind(I3,FcorDZF)), (cbind(FcorDZF,I3))  ), name="RDZF")
+corDZO	<-mxAlgebra( expression= rbind( (cbind(I3,FcorDZO)), (cbind(FcorDZO,I3))  ), name="RDZO")
+
+# Algebra to generate Expected Variance/Covariance Matrices
+Id6		<-mxMatrix(type="Iden",	nrow=nfact2, ncol=nfact2, name="I6" )
+CovMZM	<-mxAlgebra( expression=(FactLTwm  %&% (solve(I6-PhCTwm) %&% (sdMM %&% RMZM))) + ErrorTwmzm, name="expCovMZM" )
+CovDZM	<-mxAlgebra( expression=(FactLTwm  %&% (solve(I6-PhCTwm) %&% (sdMM %&% RDZM))) + ErrorTwdzm, name="expCovDZM" )
+CovMZF	<-mxAlgebra( expression=(FactLTwf  %&% (solve(I6-PhCTwf) %&% (sdFF %&% RMZF))) + ErrorTwmzf, name="expCovMZF" )
+CovDZF	<-mxAlgebra( expression=(FactLTwf  %&% (solve(I6-PhCTwf) %&% (sdFF %&% RDZF))) + ErrorTwdzf, name="expCovDZF" )
+CovDZO	<-mxAlgebra( expression=(FactLTwo  %&% (solve(I6-PhCTwmf) %&% (sdMF %&% RDZO))) + ErrorTwdzo, name="expCovDZO" )
+CovSM		<-mxAlgebra( expression=(FactLm  %&% (solve(I3-PhCm) %&% (sdM %&% I3))) + Errorm, name="expCovSM" )
+CovSF		<-mxAlgebra( expression=(FactLf  %&% (solve(I3-PhCf) %&% (sdF %&% I3))) + Errorf, name="expCovSF" )
+
+# Standardize the causal effects
+FactCovMZM	<-mxAlgebra( expression=(solve(I6-PhCTwm) %&% (sdMM %&% RMZM)), name="FCovMZM" )
+FactCovMZF	<-mxAlgebra( expression=(solve(I6-PhCTwf) %&% (sdFF %&% RMZF)), name="FCovMZF" )
+FactCovDZM	<-mxAlgebra( expression=(solve(I6-PhCTwm) %&% (sdMM %&% RDZM)), name="FCovDZM" )
+FactCovDZF	<-mxAlgebra( expression=(solve(I6-PhCTwf) %&% (sdFF %&% RDZF)), name="FCovDZF" )
+FactCovDZO	<-mxAlgebra( expression=(solve(I6-PhCTwmf) %&% (sdMF %&% RDZO)), name="FCovDZO" )
+
+Stcp1on2m	<-mxAlgebra( expression= (PhCm[2,1]* sqrt(FCovMZM[1,1]))/sqrt(FCovMZM[2,2]) , name="Stand_1on2m" )
+Stcp1on3m	<-mxAlgebra( expression= (PhCm[3,1]* sqrt(FCovMZM[1,1]))/sqrt(FCovMZM[3,3]) , name="Stand_1on3m" )
+Stcp2on3m	<-mxAlgebra( expression= (PhCm[3,2]* sqrt(FCovMZM[2,2]))/sqrt(FCovMZM[3,3]) , name="Stand_2on3m" )
+
+Stcp1on2f	<-mxAlgebra( expression= (PhCf[2,1]* sqrt(FCovMZF[1,1]))/sqrt(FCovMZF[2,2]) , name="Stand_1on2f" )
+Stcp1on3f	<-mxAlgebra( expression= (PhCf[3,1]* sqrt(FCovMZF[1,1]))/sqrt(FCovMZF[3,3]) , name="Stand_1on3f" )
+Stcp2on3f	<-mxAlgebra( expression= (PhCf[3,2]* sqrt(FCovMZF[2,2]))/sqrt(FCovMZF[3,3]) , name="Stand_2on3f" )
+
+# Standardize the covariances between latent factors
+Rfactmzm	<-mxAlgebra( expression= solve(sqrt(I6*FCovMZM)) %&% FCovMZM, name="FactcorMZM" )
+Rfactdzm	<-mxAlgebra( expression= solve(sqrt(I6*FCovDZM)) %&% FCovDZM, name="FactcorDZM" )
+Rfactmzf	<-mxAlgebra( expression= solve(sqrt(I6*FCovMZF)) %&% FCovMZF, name="FactcorMZF" )
+Rfactdzf	<-mxAlgebra( expression= solve(sqrt(I6*FCovDZF)) %&% FCovDZF, name="FactcorDZF" )
+Rfactdzo	<-mxAlgebra( expression= solve(sqrt(I6*FCovDZO)) %&% FCovDZO, name="FactcorDZO" )
+
+# Standardized Factor Loadings
+StFLm		<-mxAlgebra( expression= diag2vec(sqrt(FactLm %&% FCovMZM[1:3,1:3] / expCovMZM[1:7,1:7])) , name="StandFactm" )
+StFLf		<-mxAlgebra( expression= diag2vec(sqrt(FactLf %&% FCovMZF[1:3,1:3] / expCovMZF[1:7,1:7])) , name="StandFactf" )
+
+# Standardise error terms of the measured variables
+StErm		<-mxAlgebra( expression= diag2vec(sqrt(Errorm/expCovMZM[1:7,1:7])), name="StandErm" )
+StErf		<-mxAlgebra( expression= diag2vec(sqrt(Errorf/expCovMZF[1:7,1:7])), name="StandErf" )
+
+#Mediated effects
+indir_eff1m	<-mxAlgebra(expression = Stand_1on2m%*%Stand_2on3m, name="Indi_eff1m")
+prop_med1m	<-mxAlgebra(expression = Indi_eff1m/(Indi_eff1m + Stand_1on3m), name="Prop_med1m")
+tot_effm	<-mxAlgebra(expression = Stand_1on3m + Indi_eff1m, name="Tot_effm")
+
+indir_eff1f	<-mxAlgebra(expression = Stand_1on2f%*%Stand_2on3f, name="Indi_eff1f")
+prop_med1f	<-mxAlgebra(expression = Indi_eff1f/(Indi_eff1f + Stand_1on3f), name="Prop_med1f")
+tot_efff	<-mxAlgebra(expression = Stand_1on3f + Indi_eff1f, name="Tot_efff")
+
+# ***************************************
+
+# Data objects for Multiple Groups
+dataMZM	<-mxData(mzmData, type="raw")
+dataMZF	<-mxData(mzfData, type="raw")
+dataDZM	<-mxData(dzmData, type="raw")
+dataDZF	<-mxData(dzfData, type="raw")
+dataDZO	<-mxData(dzoData, type="raw")
+dataSM	<-mxData(smData, type="raw")
+dataSF	<-mxData(sfData, type="raw")
+
+# Objective objects for Multiple Groups
+objMZM	<-mxExpectationNormal( covariance="expCovMZM", means="expMeanMM", dimnames=selVars )
+objMZF	<-mxExpectationNormal( covariance="expCovMZF", means="expMeanFF", dimnames=selVars )
+objDZM	<-mxExpectationNormal( covariance="expCovDZM", means="expMeanMM", dimnames=selVars )
+objDZF	<-mxExpectationNormal( covariance="expCovDZF", means="expMeanFF", dimnames=selVars )
+objDZO	<-mxExpectationNormal( covariance="expCovDZO", means="expMeanMF", dimnames=selVars )
+objSM		<-mxExpectationNormal( covariance="expCovSM", means="expMeanM", dimnames=selVarsS )
+objSF		<-mxExpectationNormal( covariance="expCovSF", means="expMeanF", dimnames=selVarsS )
+
+fitFunction <- mxFitFunctionML()
+
+# Combine Groups	
+modelMZM	<- mxModel( Loadm, LoadTwm, Ze73, Ze7, PhCausm, Ze3, PhCausTwm, Id6, Id3, ErPathm, Erm, RErm, bErm, ErTwmzm, MeanMM, SDMM, FactrMZM, corMZM, CovMZM, FactCovMZM, Rfactmzm, Stcp1on2m, Stcp1on3m, Stcp2on3m, StFLm, StErm, indir_eff1m, prop_med1m, tot_effm, dataMZM, objMZM, fitFunction, name="MZM")
+modelMZF	<- mxModel( Loadf, LoadTwf, Ze73, Ze7, PhCausf, Ze3, PhCausTwf, Id6, Id3, ErPathf, Erf, RErf, bErf, ErTwmzf, MeanFF, SDFF, FactrMZF, corMZF, CovMZF, FactCovMZF, Rfactmzf, Stcp1on2f, Stcp1on3f, Stcp2on3f, StFLf, StErf, indir_eff1f, prop_med1f, tot_efff, dataMZF, objMZF, fitFunction, name="MZF")
+modelDZM	<- mxModel( Loadm, LoadTwm, Ze73, Ze7, PhCausm, Ze3, PhCausTwm, Id6, Id3, ErPathm, Erm, RErm, bErm, ErTwdzm, MeanMM, SDMM, FactrDZM, corDZM, CovDZM, FactCovDZM, Rfactdzm, dataDZM, objDZM, fitFunction, name="DZM")
+modelDZF	<- mxModel( Loadf, LoadTwf, Ze73, Ze7, PhCausf, Ze3, PhCausTwf, Id6, Id3, ErPathf, Erf, RErf, bErf, ErTwdzf, MeanFF, SDFF, FactrDZF, corDZF, CovDZF, FactCovDZF, Rfactdzf, dataDZF, objDZF, fitFunction, name="DZF")
+modelDZO	<- mxModel( Loadm, Loadf, LoadTwo, Ze73, Ze7, PhCausm, PhCausf, Ze3, PhCausTwmf, Id6, Id3, ErPathf, Erf, ErPathm, Erm, REro, bEro, ErTwdzo, MeanMF, SDMF, FactrDZO, corDZO, CovDZO, FactCovDZO, Rfactdzo, dataDZO, objDZO, fitFunction, name="DZO")
+modelSM	<- mxModel( Loadm, PhCausm, Id3, ErPathm, Erm, MeanM,  SDM, CovSM, dataSM, objSM, fitFunction, name="SingM")
+modelSF	<- mxModel( Loadf, PhCausf, Id3, ErPathf, Erf, MeanF,  SDF, CovSF, dataSF, objSF, fitFunction, name="SingF")
+
+minus2ll	<- mxAlgebra( expression=MZM.objective + MZF.objective + DZM.objective + DZF.objective + DZO.objective 
+						+ SingM.objective + SingF.objective, name="m2LL" )
+
+obj		<- mxFitFunctionAlgebra( "m2LL" )
+
+Conf1		<- mxCI (c ('MZM.PhCm[2,1]','MZM.PhCm[3,1]','MZM.PhCm[3,2]') ) # males 
+Conf2		<- mxCI (c ('MZF.PhCf[2,1]','MZF.PhCf[3,1]','MZF.PhCf[3,2]') ) # females
+Conf3		<- mxCI (c ('MZM.FCovMZM[1,1]','MZM.FCovMZM[2,2]','MZM.FCovMZM[3,3]') )  
+Conf4		<- mxCI (c ('MZF.FCovMZF[1,1]','MZF.FCovMZF[2,2]','MZF.FCovMZF[3,3]') )  
+#Conf3	<- mxCI (c ('MZM.FactcorMZM[1,1]','MZM.FactcorMZM[2,2]','MZM.FactcorMZM[3,3]') )  
+#Conf4	<- mxCI (c ('MZF.FactcorMZF[1,1]','MZF.FactcorMZF[2,2]','MZF.FactcorMZF[3,3]') ) 
+#Conf5	<- mxCI (c ('DZM.FactcorDZM[1,1]','DZM.FactcorDZM[2,2]','DZM.FactcorDZM[3,3]') )  
+#Conf6	<- mxCI (c ('DZF.FactcorDZF[1,1]','DZF.FactcorDZF[2,2]','DZF.FactcorDZF[3,3]') ) 
+#Conf7	<- mxCI (c ('DZO.FactcorDZO[1,1]','DZO.FactcorDZO[2,2]','DZO.FactcorDZO[3,3]') )  
+Conf8		<- mxCI (c ('MZM.FactLm[1,1]','MZM.FactLm[2,1]','MZM.FactLm[3,1]','MZM.FactLm[4,2]','MZM.FactLm[5,2]','MZM.FactLm[6,3]','MZM.FactLm[7,3]') ) 
+Conf9		<- mxCI (c ('MZF.FactLf[1,1]','MZF.FactLf[2,1]','MZF.FactLf[3,1]','MZF.FactLf[4,2]','MZF.FactLf[5,2]','MZF.FactLf[6,3]','MZF.FactLf[7,3]') ) 
+Confcalc	<- mxCI (c('MZM.StandFactm','MZM.Indi_eff1m[1,1]','MZM.Prop_med1m[1,1]',
+				'MZF.StandFactf','MZF.Indi_eff1f[1,1]','MZF.Prop_med1f[1,1]'))
+#Confcalc	<- mxCI (c('MZM.StandFactm','MZM.StandErm','MZM.Stand_1on2m[1,1]','MZM.Stand_1on3m[1,1]','MZM.Stand_2on3m[1,1]','MZM.Indi_eff1m[1,1]','MZM.Prop_med1m[1,1]','MZM.Tot_effm[1,1]',
+#				'MZF.StandFactf','MZF.StandErf','MZF.Stand_1on2f[1,1]','MZF.Stand_1on3f[1,1]','MZF.Stand_2on3f[1,1]','MZF.Indi_eff1f[1,1]','MZF.Prop_med1f[1,1]','MZF.Tot_efff[1,1]'))
+#FactMedModel 	<- mxModel( "FactMed", modelMZM,  modelMZF, modelDZM, modelDZF, modelDZO, modelSM, modelSF, minus2ll, obj, Conf1, Conf2, Conf3, Conf4, Conf8, Conf9, Confcalc)
+FactMedModel 	<- mxModel( "FactMed", modelMZM,  modelMZF, modelDZM, modelDZF, modelDZO, modelSM, modelSF, minus2ll, obj, Conf8, Conf9, Confcalc)
+
+# -----------------------------------------------------------------------------------------
+
+# (1) Run Constrained Mediation Model 
+FactMedFit		<- mxRun(FactMedModel, intervals=T)
+(FactMedSumm 	<- summary(FactMedFit, verbose = F)) # to get the problematic confidence intervals: verbose = F
+
+mxCompare(FactCorFit, subFactMedFit)
+
+# A more convenient way to get the output
+mxEval (MZM.FactcorMZM, FactMedFit)
+mxEval (DZM.FactcorDZM, FactMedFit)
+mxEval (MZF.FactcorMZF, FactMedFit)
+mxEval (DZF.FactcorDZF, FactMedFit)
+mxEval (DZO.FactcorDZO, FactMedFit)
+
+mxEval (MZM.PhCm, FactMedFit)
+mxEval (MZF.PhCf, FactMedFit)
+
+mxEval (MZM.Stand_1on2m, FactMedFit)
+mxEval (MZM.Stand_1on3m, FactMedFit)
+mxEval (MZM.Stand_2on3m, FactMedFit)
+mxEval (MZM.Indi_eff1m, FactMedFit)
+mxEval (MZM.Prop_med1m, FactMedFit)
+mxEval (MZM.Tot_effm, FactMedFit)
+mxEval (MZM.StandFactm, FactMedFit)
+mxEval (MZM.StandErm, FactMedFit)
+
+mxEval (MZF.Stand_1on2f, FactMedFit)
+mxEval (MZF.Stand_1on3f, FactMedFit)
+mxEval (MZF.Stand_2on3f, FactMedFit)
+mxEval (MZF.Indi_eff1f, FactMedFit)
+mxEval (MZF.Prop_med1f, FactMedFit)
+mxEval (MZF.Tot_efff, FactMedFit)
+mxEval (MZF.StandFactf, FactMedFit)
+mxEval (MZF.StandErf, FactMedFit)
+
+#---------------------------------------------------------------------
+# Run SubModel 2 for Phenotypic factor mediation model - dropping mediation path 2 on 3
+#---------------------------------------------------------------------
+# Change in fit is significant so we cannot drop it
+
+subFactMed2Model	<-mxModel(subFactMedFit, name="subFactMed2")
+subFactMed2Model	<-omxSetParameters(subFactMed2Model, labels=  c("c2on3f"), free=F, values=0)
+subFactMed2Model	<-omxAssignFirstParameters(subFactMed2Model)
+subFactMed2Fit	<-mxRun(subFactMed2Model, intervals=F)
+(subFactMed2Summ	<-summary(subFactMed2Fit, verbose = F))
+
+mxCompare(subFactMedFit, subFactMed2Fit)
+
+
+#----------------------------------------------------------------------
+# COMPARISON OF GENETIC MODELS IN HETEROGENEITY MODELS
+# SCALAR SPECIFIED FOR VARIABLES 2, 3, 4 and 6 (FROM UNIVARIATE ANALYSES), NO SEX DIFFERENCES FOR VARIABLES 1 AND 5
+# AND QUANTITATIVE SEX DIFFERENCES SPECIFIED FOR VARIABLE 7
+# NOTE: THIS A SPECIAL HYBRID MODEL:
+# I. HYBRID BY SPECIFYING SCALAR AND QUANTITATIVE SEX DIFFERENCES. TO DO THIS, I SPECIFY SCALARS FOR VARIABLES 2,3,4 AND 6,
+#    THEN CONSTRAIN i. THE FACTOR VARIANCES FOR FACTORS 1, 2 AND 3 (WHICH INFLUENCE VARIABLES 1,2,3,4,5 AND 6 RESPECTIVELY), 
+#    ii. THEIR FACTOR LOADINGS, iii. THEIR RESIDUAL A, C AND E VARIANCES AND iv. FACTOR-SPECIFIC A, C, AND E VARIANCES FOR ALL FACTORS TO BE EQUAL IN MALES AND FEMALES
+#    BUT ALLOW ii. AND iii. FOR VARIABLE 7 TO DIFFER BY SEX. THE LOGIC IS THAT THE CONSTRAINTS WILL ALLOW THE VARIANCES
+#    FOR VARIABLES 1-6 TO BE EQUAL IN MALES AND FEMALES BUT ALLOWING THOSE FOR VARIABLE 7 TO DIFFER WILL FOR QUANTITATIVE SEX DIFFERENCES
+# II.SPECIAL BECAUSE IT IS A COMPOSITE OF i. THE CHOLESKY DECOMPOSITION, ii. THE CFIP AND iii. THE BIOMETRIC MEDIATION MODEL. 
+#    FOR i., I FIX THE CAUSAL PATHS AND THE FACTOR-SPECIFIC VARIANCES TO 0, FOR ii., I FIX THE A, C AND E VARIANCE AND COVARIANCE 
+#    PATHS FOR FACTORS 2 & 3 AND CAUSAL PATHS TO 0 WHILE FREELY ESTIMATING THE FACTOR-SPECIFIC A, C AND E COMPONENTS, 
+#    AND FOR iii., I FIX THE A, C AND E FACTOR COVARIANCE PATHS AND THE FACTOR-SPECIFIC A, C AND E PATHS TO 0.
+#    THE UTILITY OF THIS COMPOSITE MODEL IS THAT WE CAN EXPAND THIS TO TEST HETEROGENEITY IN THE MECHANISMS I.E.,
+#    IS THE CHOLESKY DECOMPOSITION A BETTER EXPLANATION IN MALES WHILE BIOMETRIC MEDIATION OR THE CFIP IS A BETTER EXPLANATION
+#    IN FEMALES (SEX BEING THE HETEROGENEITY VARIABLE HERE BUT CAN BE ANY OTHER DICHOTOMOUS VARIABLE E.G., SES, ETHNICITY)
+#****************************************************************************************************************************
+# __(IVai)_____________________________________________________________________________________________________________________
+# ACE Factor MODEL by sex and zygosity
+# Combined genetic model to test differences in mechanisms of the associations between the latent factors - Cholesky, CFIP and biometric mediation model by sex
+# NO causal paths between Phenotypic Factors; A, C and E latent factors have Cholesky Structure
+# + Asp, Csp and Esp in the bottom with constraints to identify the model on top
+# Correlation between Phenotypic Factors only due to shared A, C and E influences only
+# We are estimating the variances of the factors by scaling them to the one indicator variable per factor (by fixing the loading to 1), 
+# This because applying a constraint on the factor variances of 1 is problematic especially when we model the causal paths.
+# To identify the model we constrain Asp, Csp and Esp variance components loadings on variables 1 and 10 to zero
+#_____________________________________________________________________________________________________________________________
+
+nv			<- 7				# number of variables for a twin = 1 in Univariate
+ntv			<- 2*nv			# number of variables for a pair = 2* 1 for Univariate
+nlower		<- nv*(nv+1)/2 		# number of free elements in a lower matrix nv*nv
+ncor			<- (nv*(nv+1)/2)-nv	# number of free elements in a correlation matrix nv*nv
+nfact			<- 3				# number of Latent Factors for Mediation Model per twin
+nfact2		<- 2*nfact			# number of Latent Factors for Mediation Model per twin
+nfcor			<- (nfact*(nfact+1)/2)-nfact	# number of free elements in a correlation matrix nfact*nfcat
+Groups		<- c("mz", "dz")
+Vars			<- c('edu','electtranct','finstrain','unhealthdiet','healthdiet','Dep','Anx')
+selVars		<- c('edu1','electtranct1','finstrain1','unhealthdiet1','healthdiet1','Dep1','Anx1',
+			     'edu2','electtranct2','finstrain2','unhealthdiet2','healthdiet2','Dep2','Anx2')	# THE VARIABLES FOR TWIN PAIRS
+selVarsS 		<- c('edu3','electtranct3','finstrain3','unhealthdiet3','healthdiet3','Dep3','Anx3')				# THE VARIABLES FOR A SINGLETON
+
+# Subset data
+# This will generate 5 sub data files for the 5 sex-by-zygosity groups
+mzmData 	<- subdata3[subdata3$sexzyg == 1, selVars]
+dzmData 	<- subdata3[subdata3$sexzyg == 2, selVars]
+mzfData 	<- subdata3[subdata3$sexzyg == 3, selVars]
+dzfData 	<- subdata3[subdata3$sexzyg == 4, selVars]
+dzoData 	<- subdata3[subdata3$sexzyg == 5, selVars]
+
+# Subset singletons
+# This will generate 2 sub data files for the male adn female singelton groups
+smData		<- subset(subdata3, sexzyg == 6, selVarsS)
+sfData		<- subset(subdata3, sexzyg == 7, selVarsS)
+
+# Check sub-data files
+psych::describe(mzmData)
+psych::describe(dzmData)
+psych::describe(mzfData)
+psych::describe(dzfData)
+psych::describe(dzoData)
+psych::describe(smData)
+psych::describe(sfData)
+
+# FIRST, CREATE OBJECTS WITH Labels for the Means, SD, and correlation to ease specification in the body of the model
+
+#*******************************************************************************************************
+# (6) Specify the Models
+#
+#*******************************************************************************************************
+
+# CREATE LABELS & START VALUES as objects(to ease specification in the body of the model)
+# Means
+# Create Labels for the Means Matrices
+(LabMM	<- paste("mm",1:nv,sep=""))		# Male singleton
+(LabMF	<- paste("mf",1:nv,sep=""))		# Female singleton
+(LabMMM	<- c(LabMM,LabMM))			# male-male pairs
+(LabMFF	<- c(LabMF,LabMF))			# female-female pairs
+(LabMMF	<- c(LabMM,LabMF))			# male-female pairs
+
+# Create Labels for the Scalar Matrix
+(LabS		<- paste("sf",1:nv,sep=""))		
+(LabSS	<- c(LabS,LabS))
+(LabNA	<- c("NA","NA","NA","NA","NA","NA","NA"))
+(Labdos	<- c(LabNA,LabS))
+(PatF		<- c(F,F,F,F,F,F,F))	
+(PatT		<- c(F,T,T,T,F,T,F))#Hybrid with scalars for variables 2,3,4 and 6
+(PatFT	<- c(PatF,PatT))
+(PatTT	<- c(PatT,PatT))
+
+(Stmeanm	<-colMeans(mzmData[,1:7],na.rm=TRUE))
+(Stmeanf	<-colMeans(mzfData[,1:7],na.rm=TRUE))
+
+StScalar	<-c(1,1,1,1,1,1,1)				# change here to >1 if female variance is larger than males or if it is mixed
+(DumOnes	<-c(1,1,1,1,1,1,1))
+(StSdos	<-c(DumOnes,StScalar))		# Scalar for Males is just 1
+
+# Variable-specific ACE influences
+# To identify this model we need to equate the sp effects of var and 2 and fix the Sp of last variable to 0)
+(LabEsm	<- c('es1m','es2m','es3m','es4m','es4m','es6m','es6m'))
+(LabAsm	<- c('as1m','as2m','as3m','as4m','as4m','as6m','as6m'))
+(LabCsm	<- c('cs1m','cs2m','cs3m','cs4m','cs4m','cs6m','cs6m'))
+
+(LabEsf	<- c('es1m','es2m','es3m','es4m','es4m','es6m','es6f'))#No sex differences for variables 1 and 5, and scalars for 2,3,4 and 6
+(LabAsf	<- c('as1m','as2m','as3m','as4m','as4m','as6m','as6f'))#So I constrain the residual variances for variables 1-6 to equal in males and females
+(LabCsf	<- c('cs1m','cs2m','cs3m','cs4m','cs4m','cs6m','cs6f'))#And allow the residuals for variable 7 to vary by sex
+											 #I reflect this as well in the factor loadings
+
+PatSp		<- c(TRUE,TRUE,TRUE,TRUE,TRUE,T,T)
+
+StSpam	<- c(.5,.5,.01,.7,.7,.01,.01)
+StSpcm	<- c(.5,.2,.4,.01,.01,.01,.01)
+StSpem	<- c(.8,.6,.5,.8,.8,.5,.5)
+
+StSpaf	<- c(.5,.5,.01,.7,.7,.01,.01)
+StSpcf	<- c(.5,.2,.4,.01,.01,.01,.01)
+StSpef	<- c(.8,.6,.5,.8,.8,.5,.5)
+
+# Factor loadings
+PatFl		<- c(F,T,T,F,F,F,F,			
+		     F,F,F,F,T,F,F,
+		     F,F,F,F,F,F,T)
+
+StFlm		<- c(1,.8,.5,0,0,0,0,
+		     0,0,0,1,.6,0,0,
+		     0,0,0,0,0,1,.8)
+
+StFlf		<- c(1,.8,.5,0,0,0,0,
+		     0,0,0,1,.6,0,0,
+		     0,0,0,0,0,1,.8)
+
+LabFlm	<- c('l1m','l2m','l3m',NA,NA,NA,NA,
+		     NA,NA,NA,'l4m','l5m',NA,NA,
+		     NA,NA,NA,NA,NA,'l6m','l7m')
+
+LabFlf	<- c('l1m','l2m','l3m',NA,NA,NA,NA,
+		     NA,NA,NA,'l4m','l5m',NA,NA,
+		     NA,NA,NA,NA,NA,'l6m','l7f') #I constrain the loadings for vars 1-6 to be equal in males and females.
+
+# Causal paths
+PatPhC	<- c(F,F,F,
+		     F,F,F,
+		     F,F,F)
+
+StPhC		<- c(0,0,0,
+		     0,0,0,
+		     0,0,0)
+
+LabPhCm	<- c(NA,NA,NA,
+		     'c1on2m',NA,NA,	
+		     'c1on3m','c2on3m',NA)	 
+
+LabPhCf	<- c(NA,NA,NA,
+		     'c1on2f',NA,NA,	
+		     'c1on3f','c2on3f',NA)	 
+
+# ______________________________________________________________________________________________________
+# Define matrices to hold the Means, SD, correlations
+# Use Algebra to generate expected var/cov matrices and Means
+# Specify: data objects, Fitfunction, the Model, 
+# Run the Model 
+# ______________________________________________________________________________________________________
+
+MeanMM	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmeanm,Stmeanm), 	labels=LabMMM, 	name="expMeanMM" )
+MeanM		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmeanm), 		labels=LabMM, 	name="expMeanM" )
+MeanFF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmeanf,Stmeanf), 	labels=LabMFF, 	name="expMeanFF" )
+MeanF		<-mxMatrix( "Full", 1, nv, free=T, 		values=c(Stmeanf), 		labels=LabMF, 	name="expMeanF" )
+MeanMF	<-mxMatrix( "Full", 1, ntv, free=T, 	values=c(Stmeanm,Stmeanf), 	labels=LabMMF, 	name="expMeanMF" )
+
+# Define matrices to specify the loadings of the dependent variables on the latent factors
+Loadm		<-mxMatrix(type="Full",	nrow=nv, ncol=nfact, free=PatFl, values=StFlm, labels=LabFlm, name="FactLm" )
+Id2		<-mxMatrix(type="Iden",	nrow=2, ncol=2, free=F, name="I2" )
+LoadTwm	<-mxAlgebra(I2%x%FactLm, name="FactLTwm")
+ 
+Loadf		<-mxMatrix(type="Full",	nrow=nv, ncol=nfact, free=PatFl, values=StFlf, labels=LabFlf, name="FactLf" )
+LoadTwf	<-mxAlgebra(I2%x%FactLf, name="FactLTwf")
+ 
+Ze73		<-mxMatrix("Zero", nv, nfact, free=F, name="Z73")
+LoadTwo	<-mxAlgebra(rbind(cbind(FactLm,Z73), cbind(Z73, FactLf)), name="FactLTwo")
+
+# Define the matrix to hold the Single headed Arrows (causal paths) between the 4 latent variables  
+PhCausm	<-mxMatrix(type="Full",	nrow=nfact, ncol=nfact, free=PatPhC, values=StPhC, labels=LabPhCm, name="PhCm" )
+PhCausf	<-mxMatrix(type="Full",	nrow=nfact, ncol=nfact, free=PatPhC, values=StPhC, labels=LabPhCf, name="PhCf" )
+
+# Define the matrix to hold the A and C effects: Specific 
+PathsAsm	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatSp, values=StSpam, labels=LabAsm, name="asm" )
+PathsCsm	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatSp, values=StSpcm, labels=LabCsm, name="csm" )
+PathsEsm	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatSp, values=StSpem, labels=LabEsm, name="esm" )
+
+PathsAsf	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatSp, values=StSpaf, labels=LabAsf, name="asf" )
+PathsCsf	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatSp, values=StSpcf, labels=LabCsf, name="csf" )
+PathsEsf	<-mxMatrix(type="Diag",	nrow=nv, ncol=nv, free=PatSp, values=StSpef, labels=LabEsf, name="esf" )
+
+covAsm	<-mxAlgebra( expression= asm %*% t(asm), name="Asm" )
+covCsm	<-mxAlgebra( expression= csm %*% t(csm), name="Csm" )
+covEsm	<-mxAlgebra( expression= esm %*% t(esm), name="Esm" )
+
+covAsf	<-mxAlgebra( expression= asf %*% t(asf), name="Asf" )
+covCsf	<-mxAlgebra( expression= csf %*% t(csf), name="Csf" )
+covEsf	<-mxAlgebra( expression= esf %*% t(esf), name="Esf" )
+
+covAsmf	<-mxAlgebra( expression= asm %*% t(asf), name="Asmf" )
+covCsmf	<-mxAlgebra( expression= csm %*% t(csf), name="Csmf" )
+covAsfm	<-mxAlgebra( expression= asf %*% t(asm), name="Asfm" )
+covCsfm	<-mxAlgebra( expression= csf %*% t(csm), name="Csfm" )
+
+covPsm	<-mxAlgebra( expression= Asm+Csm+Esm, name="Vsm" )
+covPsf	<-mxAlgebra( expression= Asf+Csf+Esf, name="Vsf" )
+
+# Define the matrices to hold the A and C effects: Common 
+
+PathsAcm	<-mxMatrix(type="Lower", nrow=nfact, ncol=nfact, free=TRUE, values=.6, labels=c("a11m","a21m","a31m","a22m","a32m","a33m"), name="a_cm" )
+PathsCcm	<-mxMatrix(type="Lower", nrow=nfact, ncol=nfact, free=TRUE, values=.6, labels=c("c11m","c21m","c31m","c22m","c32m","c33m"), name="c_cm" )
+PathsEcm	<-mxMatrix(type="Lower", nrow=nfact, ncol=nfact, free=TRUE, values=.6, labels=c("e11m","e21m","e31m","e22m","e32m","e33m"), name="e_cm" )
+PathsAcSpm	<-mxMatrix(type="Diag", nrow=nfact, ncol=nfact, free=FALSE, values=0, labels=c("acsp1m","acsp2m","acsp3m"), name="a_cSpm" )
+PathsCcSpm	<-mxMatrix(type="Diag", nrow=nfact, ncol=nfact, free=FALSE, values=0, labels=c("ccsp1m","ccsp2m","ccsp3m"), name="c_cSpm" )
+PathsEcSpm	<-mxMatrix(type="Diag", nrow=nfact, ncol=nfact, free=FALSE, values=0, labels=c("ecsp1m","ecsp2m","ecsp3m"), name="e_cSpm" )
+
+PathsAcf	<-mxMatrix(type="Lower", nrow=nfact, ncol=nfact, free=TRUE, values=.6, labels=c("a11m","a21f","a31f","a22m","a32f","a33m"), name="a_cf" )#Constrain variances of the 3 factors to be equal across sex in hybrid model
+PathsCcf	<-mxMatrix(type="Lower", nrow=nfact, ncol=nfact, free=TRUE, values=.6, labels=c("c11m","c21f","c31f","c22m","c32f","c33m"), name="c_cf" )
+PathsEcf	<-mxMatrix(type="Lower", nrow=nfact, ncol=nfact, free=TRUE, values=.6, labels=c("e11m","e21f","e31f","e22m","e32f","e33m"), name="e_cf" )
+PathsAcSpf	<-mxMatrix(type="Diag", nrow=nfact, ncol=nfact, free=FALSE, values=0, labels=c("acsp1m","acsp2m","acsp3m"), name="a_cSpf" )
+PathsCcSpf	<-mxMatrix(type="Diag", nrow=nfact, ncol=nfact, free=FALSE, values=0, labels=c("ccsp1m","ccsp2m","ccsp3m"), name="c_cSpf" )
+PathsEcSpf	<-mxMatrix(type="Diag", nrow=nfact, ncol=nfact, free=FALSE, values=0, labels=c("ecsp1m","ecsp2m","ecsp3m"), name="e_cSpf" )
+
+covAcm	<-mxAlgebra( expression= a_cm %*% t(a_cm), name="Acm" )
+covCcm	<-mxAlgebra( expression= c_cm %*% t(c_cm), name="Ccm" )
+covEcm	<-mxAlgebra( expression= e_cm %*% t(e_cm), name="Ecm" )
+covAcSpm	<-mxAlgebra( expression= a_cSpm %*% t(a_cSpm), name="AcSpm" )
+covCcSpm	<-mxAlgebra( expression= c_cSpm %*% t(c_cSpm), name="CcSpm" )
+covEcSpm	<-mxAlgebra( expression= e_cSpm %*% t(e_cSpm), name="EcSpm" )
+
+covAcf	<-mxAlgebra( expression= a_cf %*% t(a_cf), name="Acf" )
+covCcf	<-mxAlgebra( expression= c_cf %*% t(c_cf), name="Ccf" )
+covEcf	<-mxAlgebra( expression= e_cf %*% t(e_cf), name="Ecf" )
+covAcSpf	<-mxAlgebra( expression= a_cSpf %*% t(a_cSpf), name="AcSpf" )
+covCcSpf	<-mxAlgebra( expression= c_cSpf %*% t(c_cSpf), name="CcSpf" )
+covEcSpf	<-mxAlgebra( expression= e_cSpf %*% t(e_cSpf), name="EcSpf" )
+
+covAcmf	<-mxAlgebra( expression= a_cm %*% t(a_cf), name="Acmf" )
+covCcmf	<-mxAlgebra( expression= c_cm %*% t(c_cf), name="Ccmf" )
+covAcSpmf	<-mxAlgebra( expression= a_cSpm %*% t(a_cSpf), name="AcSpmf" )
+covCcSpmf	<-mxAlgebra( expression= c_cSpm %*% t(c_cSpf), name="CcSpmf" )
+
+covAcfm	<-mxAlgebra( expression= a_cf %*% t(a_cm), name="Acfm" )
+covCcfm	<-mxAlgebra( expression= c_cf %*% t(c_cm), name="Ccfm" )
+covAcSpfm	<-mxAlgebra( expression= a_cSpf %*% t(a_cSpm), name="AcSpfm" )
+covCcSpfm	<-mxAlgebra( expression= c_cSpf %*% t(c_cSpm), name="CcSpfm" )
+
+covPcm	<-mxAlgebra( expression= Acm+Ccm+Ecm+AcSpm+CcSpm+EcSpm, name="Vcm" )
+covPcf	<-mxAlgebra( expression= Acf+Ccf+Ecf+AcSpf+CcSpf+EcSpf, name="Vcf" )
+
+#covPcm	<-mxAlgebra( expression= Acm+Ccm+Ecm, name="Vcm" )
+#covPcf	<-mxAlgebra( expression= Acf+Ccf+Ecf, name="Vcf" )
+
+# Generate Covariance of Latent factor model Including Causal Paths between factors
+Id3		<-mxMatrix(type="Iden",	nrow=nfact, ncol=nfact, name="I3" )
+covFAcm	<-mxAlgebra( expression= solve(I3-PhCm) %&% Acm+AcSpm, name ="FAcm") 
+covFCcm	<-mxAlgebra( expression= solve(I3-PhCm) %&% Ccm+CcSpm, name ="FCcm")
+covFEcm	<-mxAlgebra( expression= solve(I3-PhCm) %&% Ecm+EcSpm, name ="FEcm")
+
+covFAcf	<-mxAlgebra( expression= solve(I3-PhCf) %&% Acf+AcSpf, name ="FAcf") 
+covFCcf	<-mxAlgebra( expression= solve(I3-PhCf) %&% Ccf+CcSpf, name ="FCcf")
+covFEcf	<-mxAlgebra( expression= solve(I3-PhCf) %&% Ecf+EcSpf, name ="FEcf")
+
+covFAcmf	<-mxAlgebra( expression= solve(I3-PhCm) %*% Acmf+AcSpmf %*% solve(I3-PhCf), name ="FAcmf") 
+covFCcmf	<-mxAlgebra( expression= solve(I3-PhCm) %*% Ccmf+CcSpmf %*% solve(I3-PhCf), name ="FCcmf")
+
+covFAcfm	<-mxAlgebra( expression= solve(I3-PhCf) %*% Acfm+AcSpfm %*% solve(I3-PhCm), name ="FAcfm") 
+covFCcfm	<-mxAlgebra( expression= solve(I3-PhCf) %*% Ccfm+CcSpfm %*% solve(I3-PhCm), name ="FCcfm")
+
+covFcm	<-mxAlgebra( expression= FAcm+FCcm+FEcm, name="FVcm" )
+covFcf	<-mxAlgebra( expression= FAcf+FCcf+FEcf, name="FVcf" )
+
+# Generate Covariance of Latent factor model Including Causal Paths between factors - influence of common factor components - Ac, Cc, Ec # I separate fac (influence of Ac, Cc, Ec only) from FAc
+covfacm	<-mxAlgebra( expression= solve(I3-PhCm) %&% Acm, name ="facm") 
+covfccm	<-mxAlgebra( expression= solve(I3-PhCm) %&% Ccm, name ="fccm")
+covfecm	<-mxAlgebra( expression= solve(I3-PhCm) %&% Ecm, name ="fecm")
+
+# Generate Covariance of Latent factor model Including Causal Paths between factors - influence of common factor components - Ac, Cc, Ec # I separate fac (influence of Ac, Cc, Ec only) from FAc
+covfacf	<-mxAlgebra( expression= solve(I3-PhCf) %&% Acf, name ="facf") 
+covfccf	<-mxAlgebra( expression= solve(I3-PhCf) %&% Ccf, name ="fccf")
+covfecf	<-mxAlgebra( expression= solve(I3-PhCf) %&% Ecf, name ="fecf")
+
+# Generate Covariance of Latent factor model Including Causal Paths between factors - influence of specific factor components - As, Cs, Es # I separate fas (influence of As, Cs, Es only) from FAc
+covfasm	<-mxAlgebra( expression= solve(I3-PhCm) %&% AcSpm, name ="fasm") 
+covfcsm	<-mxAlgebra( expression= solve(I3-PhCm) %&% CcSpm, name ="fcsm")
+covfesm	<-mxAlgebra( expression= solve(I3-PhCm) %&% EcSpm, name ="fesm")
+
+# Generate Covariance of Latent factor model Including Causal Paths between factors - influence of specific factor components - As, Cs, Es # I separate fas (influence of As, Cs, Es only) from FAc
+covfasf	<-mxAlgebra( expression= solve(I3-PhCf) %&% AcSpf, name ="fasf") 
+covfcsf	<-mxAlgebra( expression= solve(I3-PhCf) %&% CcSpf, name ="fcsf")
+covfesf	<-mxAlgebra( expression= solve(I3-PhCf) %&% EcSpf, name ="fesf")
+
+ScalarF	<- mxMatrix( type="Diag", nrow=14, ncol=14, free=PatTT, values=1, label=LabSS, name="ScF")
+ScalarOS	<- mxMatrix( type="Diag", nrow=14, ncol=14, free=PatFT, values=1, label=Labdos, name="ScOS")
+ScalarFs	<- mxMatrix( type="Diag", nrow=7, ncol=7, free=PatT, values=1, label=LabS, name="ScFs")
+
+# Var-Cov of measured vars in terms of latent factors and AC, Cc, and Ec
+FcovMZM	<-mxAlgebra( expression= (FactLTwm  %&% rbind ( cbind(FVcm, FAcm+FCcm), cbind(FAcm+FCcm, FVcm) )) , name="expFCovMZM" )#This traces the path from vars to factors and back to vars
+FcovDZM	<-mxAlgebra( expression= (FactLTwm  %&% rbind ( cbind(FVcm, .5%x%FAcm+FCcm), cbind(.5%x%FAcm+FCcm, FVcm) )) , name="expFCovDZM" )
+FcovMZF	<-mxAlgebra( expression= (FactLTwf  %&% rbind ( cbind(FVcf, FAcf+FCcf), cbind(FAcf+FCcf, FVcf) )) , name="expFCovMZF" )#This traces the path from vars to factors and back to vars
+FcovDZF	<-mxAlgebra( expression= (FactLTwf  %&% rbind ( cbind(FVcf, .5%x%FAcf+FCcf), cbind(.5%x%FAcf+FCcf, FVcf) )) , name="expFCovDZF" )
+FcovDZO	<-mxAlgebra( expression= (FactLTwo  %&% rbind ( cbind(FVcm, .5%x%FAcmf+FCcmf), cbind(.5%x%FAcfm+FCcfm, FVcf) )) , name="expFCovDZO" )
+FcovMs	<- mxAlgebra( expression= FactLm  %&% (FVcm ), name="expCovMSing")
+FcovFs	<- mxAlgebra( expression= FactLf  %&% (FVcf ), 	name="expCovFSing")    
+
+SpcovMZM	<-mxAlgebra( expression= rbind (cbind(Vsm, Asm+Csm), cbind(Asm+Csm, Vsm) ) , name="expSpCovMZM" )
+SpcovDZM	<-mxAlgebra( expression= rbind (cbind(Vsm, .5%x%Asm+Csm), cbind(.5%x%Asm+Csm, Vsm) ) , name="expSpCovDZM" )
+SpcovMZF	<-mxAlgebra( expression= rbind (cbind(Vsf, Asf+Csf), cbind(Asf+Csf, Vsf) ) , name="expSpCovMZF" )
+SpcovDZF	<-mxAlgebra( expression= rbind (cbind(Vsf, .5%x%Asf+Csf), cbind(.5%x%Asf+Csf, Vsf) ) , name="expSpCovDZF" )
+SpcovDZO	<-mxAlgebra( expression= rbind (cbind(Vsm, .5%x%Asmf+Csmf), cbind(.5%x%Asfm+Csfm, Vsf) ) , name="expSpCovDZO" )
+SpcovMs	<-mxAlgebra( expression= Vsm , name="expSpCovMs" )
+SpcovFs	<-mxAlgebra( expression= Vsf , name="expSpCovFs" )
+
+TOTcovMZM	<-mxAlgebra( expression= expFCovMZM + expSpCovMZM , name="TOTexpCovMZM" )
+TOTcovDZM	<-mxAlgebra( expression= expFCovDZM + expSpCovDZM , name="TOTexpCovDZM" )
+TOTcovMZF	<-mxAlgebra( expression= ScF %&% (expFCovMZF + expSpCovMZF ), name="TOTexpCovMZF" )
+TOTcovDZF	<-mxAlgebra( expression= ScF %&% (expFCovDZF + expSpCovDZF ), name="TOTexpCovDZF" )
+TOTcovDZO	<-mxAlgebra( expression= ScOS %&%(expFCovDZO + expSpCovDZO ), name="TOTexpCovDZO" )
+TOTcovMs	<-mxAlgebra( expression= expCovMSing+ Vsm , name="TOTexpCovMs" )
+TOTcovFs	<-mxAlgebra( expression= ScFs %&% (expCovFSing+ Vsf) , name="TOTexpCovFs" )
+
+# *******************************************************************************************************
+# Calculator
+# Standardize the Total var/covariances matrices of the observed variables
+Id14		<-mxMatrix(type="Iden",	nrow=ntv, ncol=ntv, name="I14" )
+Rfactmzm	<-mxAlgebra( expression= solve(sqrt(I14*TOTexpCovMZM)) %&% TOTexpCovMZM, name="FactcorMZM" )
+Rfactdzm	<-mxAlgebra( expression= solve(sqrt(I14*TOTexpCovDZM)) %&% TOTexpCovDZM, name="FactcorDZM" )
+Rfactmzf	<-mxAlgebra( expression= solve(sqrt(I14*TOTexpCovMZF)) %&% TOTexpCovMZF, name="FactcorMZF" )
+Rfactdzf	<-mxAlgebra( expression= solve(sqrt(I14*TOTexpCovDZF)) %&% TOTexpCovDZF, name="FactcorDZF" )
+Rfactdzo	<-mxAlgebra( expression= solve(sqrt(I14*TOTexpCovDZO)) %&% TOTexpCovDZO, name="FactcorDZO" )
+
+# Standardize the Common Effects
+stcovAcm	<-mxAlgebra( expression= FAcm/FVcm, name="stAcm" )
+stcovCcm	<-mxAlgebra( expression= FCcm/FVcm, name="stCcm" )
+stcovEcm	<-mxAlgebra( expression= FEcm/FVcm, name="stEcm" )
+
+stcovAcf	<-mxAlgebra( expression= FAcf/FVcf, name="stAcf" )
+stcovCcf	<-mxAlgebra( expression= FCcf/FVcf, name="stCcf" )
+stcovEcf	<-mxAlgebra( expression= FEcf/FVcf, name="stEcf" )
+
+# Standardize the factor Common Effects - due to Ac, Cc and Ec
+stcovacm	<-mxAlgebra( expression= facm/FVcm, name="stacm" )
+stcovccm	<-mxAlgebra( expression= fccm/FVcm, name="stccm" )
+stcovecm	<-mxAlgebra( expression= fecm/FVcm, name="stecm" )
+
+# Standardize the factor Common Effects - due to Ac, Cc and Ec
+stcovacf	<-mxAlgebra( expression= facf/FVcf, name="stacf" )
+stcovccf	<-mxAlgebra( expression= fccf/FVcf, name="stccf" )
+stcovecf	<-mxAlgebra( expression= fecf/FVcf, name="stecf" )
+
+# Standardize the factor Specific Effects - due to As, Cs and Es
+stcovasm	<-mxAlgebra( expression= fasm/FVcm, name="stasm" )
+stcovcsm	<-mxAlgebra( expression= fcsm/FVcm, name="stcsm" )
+stcovesm	<-mxAlgebra( expression= fesm/FVcm, name="stesm" )
+
+# Standardize the factor Specific Effects - due to As, Cs and Es
+stcovasf	<-mxAlgebra( expression= fasf/FVcf, name="stasf" )
+stcovcsf	<-mxAlgebra( expression= fcsf/FVcf, name="stcsf" )
+stcovesf	<-mxAlgebra( expression= fesf/FVcf, name="stesf" )
+
+# Standardize the Specific Effects
+stcovAsm	<-mxAlgebra( expression= Asm/( (FactLm %&% FVcm) +Vsm), name="stAsm" )
+stcovCsm	<-mxAlgebra( expression= Csm/( (FactLm %&% FVcm) +Vsm), name="stCsm" )
+stcovEsm	<-mxAlgebra( expression= Esm/( (FactLm %&% FVcm) +Vsm), name="stEsm" )
+
+stcovAsf	<-mxAlgebra( expression= Asf/( (FactLf %&% FVcf) +Vsf), name="stAsf" )
+stcovCsf	<-mxAlgebra( expression= Csf/( (FactLf %&% FVcf) +Vsf), name="stCsf" )
+stcovEsf	<-mxAlgebra( expression= Esf/( (FactLf %&% FVcf) +Vsf), name="stEsf" )
+
+# Calculate genetic,  environmental, and phenotypic correlations
+corAm      <- mxAlgebra( expression=solve(sqrt(I3*FAcm))%&%FAcm, name ="rAm" ) 
+corCm      <- mxAlgebra( expression=solve(sqrt(I3*FCcm))%&%FCcm, name ="rCm" )
+corEm      <- mxAlgebra( expression=solve(sqrt(I3*FEcm))%&%FEcm, name ="rEm" )
+corPm      <- mxAlgebra( expression=solve(sqrt(I3*FVcm))%&%FVcm, name ="rPm") 
+
+corAf      <- mxAlgebra( expression=solve(sqrt(I3*FAcf))%&%FAcf, name ="rAf" ) 
+corCf      <- mxAlgebra( expression=solve(sqrt(I3*FCcf))%&%FCcf, name ="rCf" )
+corEf      <- mxAlgebra( expression=solve(sqrt(I3*FEcf))%&%FEcf, name ="rEf" )
+corPf      <- mxAlgebra( expression=solve(sqrt(I3*FVcf))%&%FVcf, name ="rPf") 
+
+# Standardized Effects of Individual variables from the factors (Variance components) above
+stAvarm	<-mxAlgebra( expression= (FactLm %&% FAcm)/( (FactLm %&% FVcm) +Vsm), name="stAvariablesm" )
+stCvarm	<-mxAlgebra( expression= (FactLm %&% FCcm)/( (FactLm %&% FVcm) +Vsm), name="stCvariablesm" )
+stEvarm	<-mxAlgebra( expression= (FactLm %&% FEcm)/( (FactLm %&% FVcm) +Vsm), name="stEvariablesm" )
+
+stAvarf	<-mxAlgebra( expression= (FactLf %&% FAcf)/( (FactLf %&% FVcf) +Vsf), name="stAvariablesf" )
+stCvarf	<-mxAlgebra( expression= (FactLf %&% FCcf)/( (FactLf %&% FVcf) +Vsf), name="stCvariablesf" )
+stEvarf	<-mxAlgebra( expression= (FactLf %&% FEcf)/( (FactLf %&% FVcf) +Vsf), name="stEvariablesf" )
+
+# Standardized Factor Loadings
+StFLm		<-mxAlgebra( expression= sqrt(diag2vec( FactLm %&% FVcm / TOTexpCovMZM[1:7,1:7])) , name="StandFactm" )
+StFLf		<-mxAlgebra( expression= sqrt(diag2vec( FactLf %&% FVcf / TOTexpCovMZF[1:7,1:7])) , name="StandFactf" )
+
+# *******************************************************************************************************
+
+# Data objects for Multiple Groups
+dataMZM	<- mxData( observed=mzmData, type="raw" )
+dataDZM	<- mxData( observed=dzmData, type="raw" )
+dataMZF	<- mxData( observed=mzfData, type="raw" )
+dataDZF	<- mxData( observed=dzfData, type="raw" )
+dataDZO	<- mxData( observed=dzoData, type="raw" )
+dataSM	<-mxData(smData, type="raw")
+dataSF	<-mxData(sfData, type="raw")
+
+# Objective objects for Multiple Groups
+objMZM	<- mxExpectationNormal( covariance="TOTexpCovMZM", means="expMeanMM", dimnames=selVars)
+objDZM	<- mxExpectationNormal( covariance="TOTexpCovDZM", means="expMeanMM", dimnames=selVars)
+objMZF	<- mxExpectationNormal( covariance="TOTexpCovMZF", means="expMeanFF", dimnames=selVars)
+objDZF	<- mxExpectationNormal( covariance="TOTexpCovDZF", means="expMeanFF", dimnames=selVars)
+objDZO	<- mxExpectationNormal( covariance="TOTexpCovDZO", means="expMeanMF", dimnames=selVars)
+objsM		<- mxExpectationNormal(covariance="TOTexpCovMs", means="expMeanM", dimnames=selVarsS )
+objsF		<- mxExpectationNormal(covariance="TOTexpCovFs", means="expMeanF", dimnames=selVarsS )
+fitFunction <- mxFitFunctionML()
+ 
+# Combine Groups
+pars1m	<-list(Loadm,PhCausm,PathsAsm,PathsCsm,PathsEsm,PathsAcSpm,PathsCcSpm,PathsEcSpm,covAsm,covCsm,covEsm,covPsm,covAcSpm,covCcSpm,covEcSpm,Id3,Id2,Id14)
+pars2m	<-list(PathsAcm,PathsCcm,PathsEcm,covAcm,covCcm,covEcm,covPcm,covFAcm,covFCcm,covFEcm,covFcm,covfacm,covfccm,covfecm,covfasm,covfcsm,covfesm)
+parscalcm	<-list(stAvarm,stCvarm,stEvarm,stcovAcm,stcovCcm,stcovEcm,stcovAsm,stcovCsm,stcovEsm,StFLm,corAm,corCm,corEm,corPm,stcovacm,stcovccm,stcovecm,stcovasm,stcovcsm,stcovesm)
+
+pars1f	<-list(Loadf,PhCausf,PathsAsf,PathsCsf,PathsEsf,PathsAcSpf,PathsCcSpf,PathsEcSpf,covAsf,covCsf,covEsf,covPsf,covAcSpf,covCcSpf,covEcSpf,Id3,Id2,Id14)
+pars2f	<-list(PathsAcf,PathsCcf,PathsEcf,covAcf,covCcf,covEcf,covPcf,covFAcf,covFCcf,covFEcf,covFcf,covfacf,covfccf,covfecf,covfasf,covfcsf,covfesf)
+parscalcf	<-list(stAvarf,stCvarf,stEvarf,stcovAcf,stcovCcf,stcovEcf,stcovAsf,stcovCsf,stcovEsf,StFLf,corAf,corCf,corEf,corPf,stcovacf,stcovccf,stcovecf,stcovasf,stcovcsf,stcovesf)
+
+parso		<-list(MeanMF,LoadTwo,covAcSpmf,covCcSpmf,covAcSpfm,covCcSpfm,covAsmf,covCsmf,covAsfm,covCsfm,covAcmf,covCcmf,covAcfm,covCcfm,covFAcmf,covFCcmf,covFAcfm,covFCcfm,Ze73)
+
+modelMZM	<-mxModel(pars1m, pars2m, parscalcm, MeanMM, LoadTwm, FcovMZM, SpcovMZM, TOTcovMZM, dataMZM, objMZM, Rfactmzm, fitFunction, name="MZM" )
+modelDZM	<-mxModel(pars1m, pars2m, MeanMM, LoadTwm, FcovDZM, SpcovDZM, TOTcovDZM, dataDZM, objDZM, Rfactdzm, fitFunction, name="DZM" )
+modelMZF	<-mxModel(pars1f, pars2f, parscalcf, MeanFF, LoadTwf, ScalarF, FcovMZF, SpcovMZF, TOTcovMZF, dataMZF, objMZF, Rfactmzf, fitFunction, name="MZF" )
+modelDZF	<-mxModel(pars1f, pars2f, MeanFF, LoadTwf, ScalarF, FcovDZF, SpcovDZF, TOTcovDZF, dataDZF, objDZF, Rfactdzf, fitFunction, name="DZF" )
+modelDZO	<-mxModel(pars1m, pars2m, pars1f, pars2f, parso, ScalarOS, FcovDZO, SpcovDZO, TOTcovDZO, dataDZO, objDZO, Rfactdzo, fitFunction, name="DZO" )
+modelsM	<-mxModel(pars1m, pars2m, MeanM, FcovMs, SpcovMs, TOTcovMs, dataSM, objsM, fitFunction, name="SM")
+modelsF	<-mxModel(pars1f, pars2f, MeanF, ScalarFs, FcovFs, SpcovFs, TOTcovFs, dataSF, objsF, fitFunction, name="SF")
+
+minus2ll	<-mxAlgebra( expression=MZM.objective + DZM.objective + MZF.objective + DZF.objective + DZO.objective + SM.objective + SF.objective, name="m2LL" )
+obj		<-mxFitFunctionAlgebra( "m2LL" )
+
+cistFLm	<-mxCI (c ('MZM.StandFactm','MZM.stacm','MZM.stccm','MZM.stecm'))
+#cistFcm	<-mxCI (c ('MZM.stAcm', 'MZM.stCcm', 'MZM.stEcm','MZM.stasm','MZM.stcsm','MZM.stesm') ) 	# standardized var comp from Common feactors	
+cistVsm	<-mxCI (c ('MZM.stAsm', 'MZM.stCsm', 'MZM.stEsm') ) 	# standardized var comp from specific Factors
+#cistvarsm	<-mxCI (c ('MZM.stAvariablesm','MZM.stCvariablesm','MZM.stEvariablesm', 'MZM.rAm', 'MZM.rCm', 'MZM.rEm', 'MZM.rPm'))
+
+cistFLf	<-mxCI (c ('MZF.StandFactf','MZF.stacf','MZF.stccf','MZF.stecf'))
+#cistFcf	<-mxCI (c ('MZF.stAcf', 'MZF.stCcf', 'MZF.stEcf','MZF.stasf','MZF.stcsf','MZF.stesf') ) 	# standardized var comp from Common feactors	
+cistVsf	<-mxCI (c ('MZF.stAsf', 'MZF.stCsf', 'MZF.stEsf') ) 	# standardized var comp from specific Factors
+#cistvarsf	<-mxCI (c ('MZF.stAvariablesf','MZF.stCvariablesf','MZF.stEvariablesf', 'MZF.rAf', 'MZF.rCf', 'MZF.rEf', 'MZF.rPf'))
+
+HetACEACEModel	<-mxModel("Hetaceace", modelMZM, modelDZM, modelMZF, modelDZF, modelDZO, modelsM, modelsF, minus2ll, obj, cistFLm, cistVsm, cistFLf, cistVsf) 
+
+# --------------------------------------------------------------------------------------------------------------------------------
+# 4 RUN ACE Factor Model: Cholesky (by Zygosity)
+
+HetACEACEFit	<-mxRun(HetACEACEModel, intervals=F)
+(HetACEACESumm	<-summary(HetACEACEFit, verbose=F))
+
+# Get some output
+
+mxEval(MZM.FactcorMZM, HetACEACEFit)
+mxEval(MZM.TOTexpCovMZM, HetACEACEFit)
+mxEval(MZM.rAm, HetACEACEFit)
+mxEval(MZM.rCm, HetACEACEFit)
+mxEval(MZM.rEm, HetACEACEFit)
+mxEval(MZM.FactcorMZM, HetACEACEFit)
+
+mxEval(MZM.Vsm, HetACEACEFit)
+mxEval(MZM.StandFactm, HetACEACEFit)
+
+mxEval(MZM.FAcm, HetACEACEFit)
+mxEval(MZM.FCcm, HetACEACEFit)
+mxEval(MZM.FEcm, HetACEACEFit)
+mxEval(MZM.FVcm, HetACEACEFit)
+
+mxEval(MZM.stAcm, HetACEACEFit)
+mxEval(MZM.stCcm, HetACEACEFit)
+mxEval(MZM.stEcm, HetACEACEFit)
+
+mxEval(MZM.rAm, HetACEACEFit)
+mxEval(MZM.rCm, HetACEACEFit)
+mxEval(MZM.rEm, HetACEACEFit)
+
+mxEval(MZM.stAsm, HetACEACEFit)
+mxEval(MZM.stCsm, HetACEACEFit)
+mxEval(MZM.stEsm, HetACEACEFit)
+
+mxEval(MZM.stAvariablesm, HetACEACEFit)
+mxEval(MZM.stCvariablesm, HetACEACEFit)
+mxEval(MZM.stEvariablesm, HetACEACEFit)
+
+mxEval(MZM.FactcorMZM, HetACEACEFit)
+mxEval(DZM.FactcorDZM, HetACEACEFit)
+
+mxEval(MZF.Vsf, HetACEACEFit)
+mxEval(MZF.StandFactf, HetACEACEFit)
+
+mxEval(MZF.FAcf, HetACEACEFit)
+mxEval(MZF.FCcf, HetACEACEFit)
+mxEval(MZF.FEcf, HetACEACEFit)
+mxEval(MZF.FVcf, HetACEACEFit)
+mxEval(MZF.PhC, HetACEACEFit)
+
+mxEval(MZF.stAcf, HetACEACEFit)
+mxEval(MZF.stCcf, HetACEACEFit)
+mxEval(MZF.stEcf, HetACEACEFit)
+
+mxEval(MZF.rAf, HetACEACEFit)
+mxEval(MZF.rCf, HetACEACEFit)
+mxEval(MZF.rEf, HetACEACEFit)
+
+mxEval(MZF.stAsf, HetACEACEFit)
+mxEval(MZF.stCsf, HetACEACEFit)
+mxEval(MZF.stEsf, HetACEACEFit)
+
+mxEval(MZF.stAvariablesf, HetACEACEFit)
+mxEval(MZF.stCvariablesf, HetACEACEFit)
+mxEval(MZF.stEvariablesf, HetACEACEFit)
+
+mxEval(MZF.FactcorMZF, HetACEACEFit)
+mxEval(DZF.FactcorDZF, HetACEACEFit)
+
+mxEval(MZMF.FactcorMZMF, HetACEACEFit)
+mxEval(DZMF.FactcorDZMF, HetACEACEFit)
+mxEval(MZFM.FactcorMZFM, HetACEACEFit)
+mxEval(DZFM.FactcorDZFM, HetACEACEFit)
+
+#USE
+# -----------------------------------------------------------------------------------------
+# Submodel for HetACEACEModel - More parsimonious - dropping negative/small parameters
+# ACE in male and female
+# We do this using labels
+# -----------------------------------------------------------------------------------------
+
+SubHetACEACEModel		<- mxModel(HetACEACEFit, name="SubHetACEACE")
+SubHetACEACEModel		<- omxSetParameters(SubHetACEACEModel, labels=c("a31m","a21m","a32m","a22m","a33m"),free=F, values=0)
+SubHetACEACEModel		<- omxSetParameters(SubHetACEACEModel, labels=c("e21m","e32m"),free=F, values=0)
+SubHetACEACEModel		<- omxSetParameters(SubHetACEACEModel, labels=c("a21f","c31f","e32f"),free=F, values=0)
+SubHetACEACEModel		<- omxAssignFirstParameters(SubHetACEACEModel)
+SubHetACEACEFit		<- mxRun(SubHetACEACEModel, intervals=T)
+(SubHetACEACESumm		<- summary(SubHetACEACEFit, verbose=F))
+
+mxCompare(HetACEACEFit, SubHetACEACEFit)
+
+#USE
+# -----------------------------------------------------------------------------------------
+# Submodel to derive more parsimonious model by dropping negative/small parameters
+# ACE in male and female
+# We do this using labels
+# -----------------------------------------------------------------------------------------
+
+Sub2HetACEACEModel	<- mxModel(SubHetACEACEFit, name="Sub2HetACEACE")
+Sub2HetACEACEModel	<- omxSetParameters(Sub2HetACEACEModel, labels=c("c21m","c32m","e31m"),free=T, values=.2, newlabels=c("c21f","c32f","e31f"))
+Sub2HetACEACEModel	<- omxSetParameters(Sub2HetACEACEModel, labels=c("c31f","a31f","a32f","e21f","e32f"),free=F, values=0)
+Sub2HetACEACEModel	<- omxAssignFirstParameters(Sub2HetACEACEModel)
+Sub2HetACEACEFit		<- mxRun(Sub2HetACEACEModel, intervals=F)
+(Sub2HetACEACESumm	<- summary(Sub2HetACEACEFit, verbose=F))
+
+mxCompare(SubHetACEACEFit, Sub2HetACEACEFit)
+
+
+#USE
+# -----------------------------------------------------------------------------------------
+# Submodel diic - Causal heterogeneity model for factor-specific variance components
+# Mediation in low BMI and Mediation in high BMI
+# We do this using labels
+# -----------------------------------------------------------------------------------------
+HetMedMedModel	<- mxModel(HetACEACEFit, name="HetMedMed")
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("a21m","a31m","a32m"),free=F, values=0)
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("c21m","c31m","c32m"),free=F, values=0)
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("e21m","e31m","e32m"),free=F, values=0)
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("a21f","a31f","a32f"),free=F, values=0)
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("c21f","c31f","c32f"),free=F, values=0)
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("e21f","e31f","e32f"),free=F, values=0)
+
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("c1on2m","c1on3m","c2on3m"),free=T, values=.2)
+HetMedMedModel	<- omxSetParameters(HetMedMedModel, labels=c("c1on2f","c1on3f","c2on3f"),free=T, values=.2)
+HetMedMedModel	<- omxAssignFirstParameters(HetMedMedModel)
+HetMedMedFit	<- mxRun(HetMedMedModel, intervals=F)
+(HetMedMedSum	<- summary(HetMedMedFit))
+
+mxCompare(HetACEACEFit, HetMedMedFit)
+
+
+#USE
+# -----------------------------------------------------------------------------------------
+# Submodel diih - Causal heterogeneity model for factor-specific variance components
+# CFIP in male and CFIP in female
+# We do this using labels
+# -----------------------------------------------------------------------------------------
+HetCFIPCFIPModel	<- mxModel(HetACEACEFit, name="HetCFIPCFIP")
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("a22m","a32m","a33m"),free=F, values=0)
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("c22m","c32m","c33m"),free=F, values=0)
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("e22m","e32m","e33m"),free=F, values=0)
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("a32f"),free=F, values=0)
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("c32f"),free=F, values=0)
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("e32f"),free=F, values=0)
+
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("a21f","a31f"),free=T, values=.6, newlabels=c("a21m","a31m"))
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("c21f","c31f"),free=T, values=.6, newlabels=c("c21m","c31m"))
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("e21f","e31f"),free=T, values=.6, newlabels=c("e21m","e31m"))
+
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("acsp1m","acsp2m","acsp3m"),free=T, values=c(.01,.01,.3,.01))
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("ccsp1m","ccsp2m","ccsp3m"),free=T, values=c(.01,.01,.5,.01))
+HetCFIPCFIPModel	<- omxSetParameters(HetCFIPCFIPModel, labels=c("ecsp1m","ecsp2m","ecsp3m"),free=T, values=c(.01,.5,.5,.5))
+HetCFIPCFIPModel	<- omxAssignFirstParameters(HetCFIPCFIPModel)
+
+HetCFIPCFIPFit	<- mxRun(HetCFIPCFIPModel, intervals=F)
+(HetCFIPCFIPSum	<- summary(HetCFIPCFIPFit))
+
+mxCompare(HetACEACEFit, HetCFIPCFIPFit)
+
+
